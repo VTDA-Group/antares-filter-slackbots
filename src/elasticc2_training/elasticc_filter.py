@@ -1,10 +1,8 @@
 import antares.devkit as dk
 import numpy as np
-import extinction
 from astropy.coordinates import SkyCoord
-from dynesty import NestedSampler
 from scipy.stats import truncnorm
-from dynesty import utils as dyfunc
+from scipy.optimize import curve_fit
 import P4J
 
 import io
@@ -13,6 +11,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from superphot_plus.lightcurve import Lightcurve
+from superphot_plus.samplers.dynesty_sampler import DynestySampler
+from superphot_plus.surveys.surveys import Survey
+from superphot_plus.import_utils import clip_lightcurve_end
 
 
 def get_meta_features(lc, ra, dec):
@@ -119,7 +120,7 @@ def estimate_period(t, f, ferr, fmax=50.):
     return 1. / fbest[0]
     
     
-def preprocess_lightcurve(lc_arr, name, mwebv):
+def preprocess_lightcurve(lc_arr, name, *, survey: Survey):
     """
     Imports all relevant data relevant to one lightcurve/locus,
     removes points with NaN errors, converts to flux units, and 
@@ -129,8 +130,10 @@ def preprocess_lightcurve(lc_arr, name, mwebv):
     ----------
     lc_arr : numpy array
         lightcurve t, f, ferr, b
-    mwebv : float
-        Milky Way E(B-V)
+    name : str
+        Target name
+    survey : Survey
+        Survey to use, e.g. LSST
     
     Returns
     ----------
@@ -147,12 +150,11 @@ def preprocess_lightcurve(lc_arr, name, mwebv):
     lc = Lightcurve(
         times = lc_arr_pruned[0],
         fluxes = lc_arr_pruned[1],
-        flux_errs = lc_arr_pruned[2],
-        bands = lc_arr_prunced[3],
+        flux_errors = lc_arr_pruned[2],
+        bands = lc_arr_pruned[3],
         name = name
     )
     
-    survey = Survey.LSST()
     ext_dict = survey.get_band_extinctions(ra, dec, mwebv=mwebv)
     for unique_b in ext_dict:
         lc.fluxes[lc.bands == unique_b] *= 10**(0.4 * ext_dict[unique_b])
@@ -162,10 +164,10 @@ def preprocess_lightcurve(lc_arr, name, mwebv):
     
     # clip both ends
     clipped_lc = clip_lightcurve_end(
-        lc.times, lc.fluxes, lc.flux_errs, lc.bands
+        lc.times, lc.fluxes, lc.flux_errors, lc.bands
     )
     reversed_clipped_lc = clip_lightcurve_end(
-        clipped_lc[:,::-1]
+        *clipped_lc[:,::-1]
     )
     lc.times, lc.fluxes, lc.flux_errors, lc.bands = reversed_clipped_lc[:,::-1]
     
@@ -322,6 +324,10 @@ class Superphot_Plus_ELASTICC2_v1(dk.Filter):
         self.band_names_to_numbers = {
             "u": 0, "g": 1, "r": 2, "i": 3, "z": 4, "Y": 5
         }
+
+        self.sampler = DynestySampler()
+
+        self.survey = Survey.LSST()
         
     def add_classification(self, class_id, prob):
         """Helper function to add classification result.
@@ -374,17 +380,17 @@ class Superphot_Plus_ELASTICC2_v1(dk.Filter):
 
         # preprocessing + calculating meta features
         try:
-            lc, ra, dec = preprocess_lightcurve(arr)
+            lc, ra, dec = preprocess_lightcurve(arr, locus.locus_id, survey=self.survey)
         except:
             return
         
         # apply top-level classifier
         meta_features = get_meta_features(lc, ra, dec)
         self.recurring_prob, self.nonrecurring_prob = self.top_level_model.classify_from_fit_param(meta_features)
-        self.add_classification(2, recurring_prob)
-        self.add_classification(1, nonrecurring_prob)
+        self.add_classification(2, self.recurring_prob)
+        self.add_classification(1, self.nonrecurring_prob)
         
-        recurring = recurring_prob > nonrecurring_prob
+        recurring = self.recurring_prob > self.nonrecurring_prob
         
         if recurring:
             self.distribute_prob_evenly(False)
@@ -393,28 +399,24 @@ class Superphot_Plus_ELASTICC2_v1(dk.Filter):
             self.distribute_prob_evenly(True)
         
         if recurring:
-            normed_recurring_params = (meta_features - self.recurring_means) / self.recurring_stddevs
-            probs_recurring = get_predictions(self.recurring_model, torch.Tensor(np.array([normed_recurring_params,])), 'cpu').numpy()
+            # normed_recurring_params = (meta_features - self.recurring_means) / self.recurring_stddevs
+            # probs_recurring = get_predictions(self.recurring_model, torch.Tensor(np.array([normed_recurring_params,])), 'cpu').numpy()
+            self.recurring_model_probs = self.recurring_model.classify_from_fit_param(meta_features)
             for e, class_id in enumerate(self.recurring_classes):
                 self.add_classification(
                     int(class_id),
-                    probs[0].item() * probs_recurring[e].item()
+                    self.recurring_prob * self.recurring_model_probs[e]
                 )
             
-        else:
+        else:  # non-recurring
             #print("starting run nested sampling")
-            base_band_i = 1 # second of g, r band base fit
-            initial_bands = np.array([1,2,3])
-            init_idx = np.isin(b, initial_bands)
-            eq_samples, max_flux = run_nested_sampling(mjd[init_idx], f[init_idx], ferr[init_idx], b[init_idx], [1,2,3], base_band_i)
-            if eq_samples is None:
-                for class_id in self.nonrecurring_classes:
-                    self.add_classification(
-                        int(class_id),
-                        probs[1].item() / 15.,
-                    )
-            median_params = np.median(eq_samples, axis=0)
-            median_red = median_params[7 * base_band_i: (base_band_i + 1) * 7]
+            gri_lc = lc.filter_by_band(["g", "r", "i"], in_place=False)
+            gri_samples = self.sampler.run_single_curve(gri_lc, self.survey.priors)
+
+            if gri_samples is None:
+                self.distribute_prob_evenly(False)
+            mean_params = gri_samples.sample_mean()
+            mean_r = mean_params[7:14]
             for aux_b in [0, 4, 5]:
                 #if len(b[b == aux_b]) == 0:
                 #    eq_samples_aux = np.array([
