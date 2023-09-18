@@ -290,6 +290,9 @@ class Superphot_Plus_ELASTICC2_v1(dk.Filter):
             e: x for e, x in enumerate(self.recurring_classes)
         } 
         
+        self.recurring_prob = 0.
+        self.nonrecurring_prob = 0.
+        
         # load model files
         recurring_model_fn = self.files[
             'superphot_elasticc2_recurring_model_v1.pt'
@@ -306,24 +309,15 @@ class Superphot_Plus_ELASTICC2_v1(dk.Filter):
         self.recurring_model.load_state_dict(torch.load(stream)) # load trained state dict to the MLP
         
         stream = io.BytesIO(nonrecurring_model_fn)
+        stream2 = io.BytesIO(nonrecurring_config_fn)
         self.nonrecurring_model, _ = SuperphotClassifier.load(
+            stream,
+            stream2
         )
         
         stream = io.BytesIO(top_level_model_fn)
         self.top_level_model = MLP(21, 2, 256, 4) # set up empty multi-layer perceptron
         self.top_level_model.load_state_dict(torch.load(stream)) # load trained state dict to the MLP
-        
-        #print("Loaded model")
-        
-        # to normalize the input features, specific to model version (v2)
-        self.top_level_means = FILLIN               
-        self.top_level_stddevs = FILLIN
-        
-        self.recurring_means = FILLIN
-        self.recurring_stddevs = FILLIN
-        
-        self.nonrecurring_means = FILLIN
-        self.nonrecurring_stddevs = FILLIN
         
         self.band_names_to_numbers = {
             "u": 0, "g": 1, "r": 2, "i": 3, "z": 4, "Y": 5
@@ -341,7 +335,24 @@ class Superphot_Plus_ELASTICC2_v1(dk.Filter):
             }
         )
         
-        
+    def distribute_prob_evenly(self, recurring):
+        """Distributes prob evenly among less likely class.
+        """
+        if recurring:
+            N = len(self.recurring_classes)
+            for class_id in self.recurring_classes:
+                self.add_classification(
+                    int(class_id),
+                    self.recurring_prob / N,
+                )
+        else:
+            N = len(self.nonrecurring_classes)
+            for class_id in self.nonrecurring_classes:
+                self.add_classification(
+                    int(class_id),
+                    self.nonrecurring_prob / N,
+                )
+                
     def run(self, locus):
         """
         Runs a filter that first applies a top-level classifier, and then fits all suspected non-recurring
@@ -367,30 +378,19 @@ class Superphot_Plus_ELASTICC2_v1(dk.Filter):
         except:
             return
         
+        # apply top-level classifier
         meta_features = get_meta_features(lc, ra, dec)
+        self.recurring_prob, self.nonrecurring_prob = self.top_level_model.classify_from_fit_param(meta_features)
+        self.add_classification(2, recurring_prob)
+        self.add_classification(1, nonrecurring_prob)
         
-        #first apply top level sampler
-        normed_top_level_params = (meta_features - self.top_level_means) / self.top_level_stddevs
-        probs = get_predictions(self.top_level_model, torch.Tensor(np.array([normed_top_level_params,])), 'cpu').numpy() # uses model to output SN type probabilities
-
-        self.add_classification(2, probs[0].item())
-        self.add_classification(1, probs[1].item())
+        recurring = recurring_prob > nonrecurring_prob
         
-        if probs[0] < 0.5:
-            recurring = False
-            for class_id in self.recurring_classes:
-                self.add_classification(
-                    int(class_id),
-                    probs[0].item() / 5.,
-                )
+        if recurring:
+            self.distribute_prob_evenly(False)
+            
         else:
-            recurring = True
-            for class_id in self.nonrecurring_classes:
-                self.add_classification(
-                    int(class_id),
-                    probs[1].item() / 15.,
-                )
-                #print(int(class_id), probs[1].item() / 15.)
+            self.distribute_prob_evenly(True)
         
         if recurring:
             normed_recurring_params = (meta_features - self.recurring_means) / self.recurring_stddevs
