@@ -175,59 +175,6 @@ def preprocess_lightcurve(lc_arr, name, *, survey: Survey):
         raise ValueError
         
     return lc, ra, dec
-    
-    
-def adjust_log_dists(features):
-    """
-    Some parameters distributions more closely follow a Gaussian
-    in log space, so these features are converted before being
-    normalized.
-    
-    Parameters
-    ----------
-    features : numpy float array
-        the input parameters
-    
-    Returns
-    ----------
-    features : numpy float array
-        the modified original array
-    """
-    features[18:21] = np.log10(features[18:21])
-    features[16] = np.log10(features[16])
-    return np.delete(features, [14,17])
-
-def get_predictions(model, input_features, device='cpu'):
-    """
-    Given a trained model, returns the probabilities of the
-    given object being each supernovae type, according to
-    the class-to-label conversion dictionary.
-    
-    Parameters
-    ----------
-    model : MLP object
-        the trained SN classifier
-    input_features : torch float tensor
-        the normalized model parameters
-    device : string
-        device to evaluate model on. By default CPU
-        
-    Returns
-    ----------
-    probabilities : torch float tensor
-        the probability of the input object being
-        each of the five SN types
-    """
-
-    model.eval()
-
-    with torch.no_grad():
-
-        x = input_features.to(device)
-        # applies trained model to input features
-        y_pred, _ = model(x)
-        y_prob = F.softmax(y_pred, dim=-1)
-        return y_prob[0]
 
     
 class Superphot_Plus_ELASTICC2_v1(dk.Filter):
@@ -299,16 +246,24 @@ class Superphot_Plus_ELASTICC2_v1(dk.Filter):
         recurring_model_fn = self.files[
             'superphot_elasticc2_recurring_model_v1.pt'
         ]
+        recurring_config_fn = self.files[''] # placeholder
         nonrecurring_model_fn = self.files[
             'superphot_elasticc2_nonrecurring_model_v1.pt'
         ]
+        nonrecurring_config_fn = self.files[''] # placeholder
+
         top_level_model_fn = self.files[
             'superphot_elasticc2_top_level_model_v1.pt'
         ]
+        top_level_config_fn = self.files[''] # placeholder
+
         
         stream = io.BytesIO(recurring_model_fn)
-        self.recurring_model = MLP(21, len(self.recurring_classes), 256, 4) # set up empty multi-layer perceptron
-        self.recurring_model.load_state_dict(torch.load(stream)) # load trained state dict to the MLP
+        stream2 = io.BytesIO(recurring_config_fn)
+        self.top_level_model, _ = RecurringClassifier.load(
+            stream,
+            stream2
+        )
         
         stream = io.BytesIO(nonrecurring_model_fn)
         stream2 = io.BytesIO(nonrecurring_config_fn)
@@ -318,15 +273,13 @@ class Superphot_Plus_ELASTICC2_v1(dk.Filter):
         )
         
         stream = io.BytesIO(top_level_model_fn)
-        self.top_level_model = MLP(21, 2, 256, 4) # set up empty multi-layer perceptron
-        self.top_level_model.load_state_dict(torch.load(stream)) # load trained state dict to the MLP
-        
-        self.band_names_to_numbers = {
-            "u": 0, "g": 1, "r": 2, "i": 3, "z": 4, "Y": 5
-        }
+        stream2 = io.BytesIO(top_level_config_fn)
+        self.top_level_model, _ = TopLevelClassifier.load(
+            stream,
+            stream2
+        )
 
         self.sampler = DynestySampler()
-
         self.survey = Survey.LSST()
         
     def add_classification(self, class_id, prob):
@@ -336,8 +289,8 @@ class Superphot_Plus_ELASTICC2_v1(dk.Filter):
             {
             "classifierName": self.name,
             "classifierParams": self.parameters,
-            "classId": 2,
-            "probability": probs[0].item(),
+            "classId": class_id,
+            "probability": prob,
             }
         )
         
@@ -392,11 +345,7 @@ class Superphot_Plus_ELASTICC2_v1(dk.Filter):
         
         recurring = self.recurring_prob > self.nonrecurring_prob
         
-        if recurring:
-            self.distribute_prob_evenly(False)
-            
-        else:
-            self.distribute_prob_evenly(True)
+        self.distribute_prob_evenly(~recurring)
         
         if recurring:
             # normed_recurring_params = (meta_features - self.recurring_means) / self.recurring_stddevs
@@ -415,6 +364,7 @@ class Superphot_Plus_ELASTICC2_v1(dk.Filter):
 
             if gri_samples is None:
                 self.distribute_prob_evenly(False)
+                
             mean_params = gri_samples.sample_mean()
             mean_r = mean_params[7:14]
             for aux_b in [0, 4, 5]:
