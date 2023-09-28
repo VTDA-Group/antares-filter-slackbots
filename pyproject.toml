@@ -16,6 +16,7 @@ classifiers = [
 dynamic = ["version"]
 dependencies = [
     "superphot-plus", 
+    "antares @ git+https://gitlab.com/nsf-noirlab/csdc/antares/antares",  
 ]
 
 # On a mac, install optional dependencies with `pip install '.[dev]'` (include the single quotes)
