@@ -1,0 +1,122 @@
+{
+  "locus_id": "locus-001",
+  "ra": 0.0,
+  "dec": 0.0,
+  "properties": {
+    "foo": "bar"
+  },
+  "tags": [],
+  "catalog_objects": {
+    "catalog-001": [
+      {
+        "objid": 44183,
+        "creationdate": "2019-08-29T17:41:26+00:00",
+        "declination": 2.9090313272727,
+        "discmagfilter": 111.0,
+        "discoverydate": "2019-08-24T09:01:26+00:00",
+        "discoverymag": 19.0,
+        "internal_names": "ZTF19abrmlxu",
+        "lastmodified": "2019-08-29T17:41:26+00:00",
+        "name": "2019oym",
+        "name_prefix": "SN",
+        "ra": 14.973595209091,
+        "redshift": 0.065,
+        "reporting_group": "ZTF",
+        "reporting_groupid": "48",
+        "reports": null,
+        "source_group": "ZTF",
+        "source_groupid": "48",
+        "time_received": "2019-08-29T17:41:25+00:00",
+        "type": "SN Ia",
+        "typeid": "3"
+      }
+    ]
+  },
+  "alerts": [
+    {
+      "alert_id": "alert-001",
+      "locus_id": "locus-001",
+      "mjd": 59000,
+      "processed_at": "2023-08-24T09:22:35.472550",
+      "properties": {
+        "ant_mjd": 59000,
+        "ant_mag": 16.0,
+        "ant_magerr": 0.0,
+        "ant_maglim": 0.0,
+        "ant_survey": 1,
+        "ant_ra": 0.0,
+        "ant_dec": 0.0,
+        "ant_passband": "g"
+      },
+      "grav_wave_events": []
+    },
+    {
+      "alert_id": "alert-001",
+      "locus_id": "locus-001",
+      "mjd": 59001,
+      "processed_at": "2023-08-24T09:22:35.472846",
+      "properties": {
+        "ant_mjd": 59001,
+        "ant_mag": 16.0,
+        "ant_magerr": 0.0,
+        "ant_maglim": 0.0,
+        "ant_survey": 1,
+        "ant_ra": 0.0,
+        "ant_dec": 0.0,
+        "ant_passband": "g"
+      },
+      "grav_wave_events": []
+    },
+    {
+      "alert_id": "alert-001",
+      "locus_id": "locus-001",
+      "mjd": 59002,
+      "processed_at": "2023-08-24T09:22:35.473121",
+      "properties": {
+        "ant_mjd": 59002,
+        "ant_mag": 16.0,
+        "ant_magerr": 0.0,
+        "ant_maglim": 0.0,
+        "ant_survey": 1,
+        "ant_ra": 0.0,
+        "ant_dec": 0.0,
+        "ant_passband": "g"
+      },
+      "grav_wave_events": []
+    },
+    {
+      "alert_id": "alert-001",
+      "locus_id": "locus-001",
+      "mjd": 59003,
+      "processed_at": "2023-08-24T09:22:35.473395",
+      "properties": {
+        "ant_mjd": 59003,
+        "ant_mag": 16.0,
+        "ant_magerr": 0.0,
+        "ant_maglim": 0.0,
+        "ant_survey": 1,
+        "ant_ra": 0.0,
+        "ant_dec": 0.0,
+        "ant_passband": "g"
+      },
+      "grav_wave_events": []
+    },
+    {
+      "alert_id": "alert-001",
+      "locus_id": "locus-001",
+      "mjd": 59004,
+      "processed_at": "2023-08-24T09:22:35.473870",
+      "properties": {
+        "ant_mjd": 59004,
+        "ant_mag": 16.0,
+        "ant_magerr": 0.0,
+        "ant_maglim": 0.0,
+        "ant_survey": 1,
+        "ant_ra": 0.0,
+        "ant_dec": 0.0,
+        "ant_passband": "g"
+      },
+      "grav_wave_events": []
+    }
+  ]
+}
