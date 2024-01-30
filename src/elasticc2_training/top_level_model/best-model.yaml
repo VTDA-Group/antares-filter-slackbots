@@ -1,0 +1,61 @@
+input_dim: 29
+output_dim: 19
+normalization_means: !!python/object/apply:numpy.core.multiarray._reconstruct
+  args:
+  - &id001 !!python/name:numpy.ndarray ''
+  - !!python/tuple
+    - 0
+  - !!binary |
+    Yg==
+  state: !!python/tuple
+  - 1
+  - !!python/tuple
+    - 29
+  - &id002 !!python/object/apply:numpy.dtype
+    args:
+    - f8
+    - false
+    - true
+    state: !!python/tuple
+    - 3
+    - <
+    - null
+    - null
+    - null
+    - -1
+    - -1
+    - 0
+  - false
+  - !!binary |
+    ManosiA7IcCEce+1GdpqQJi6BmlO9MM/hpLvtVm5CsAHem3+vmF6QARTl7yGV3pAeat6SItOekBd
+    TLMzRUl6QAjSb/1RRnpAuIu0i6xEekAO0c5u70rnP0rymXs6cnBA22vmK0vfdECFbg2FDZKAwPmP
+    yVGrQtBAAWVav7TftUCqY94NA5XtQERj7pBnK4LArpIVjkX8gMCTS3AMzPw9QbuyqtwZxCRAMVD/
+    sk0EA0C8kfLZtYsIQP5jJB0bWRFAg2A1TO2bCEEnOGvGdxwIQBJ8B+Fn1SBAEvJ57oQMKkA9Z3CN
+    z+YzQA==
+normalization_stddevs: !!python/object/apply:numpy.core.multiarray._reconstruct
+  args:
+  - *id001
+  - !!python/tuple
+    - 0
+  - !!binary |
+    Yg==
+  state: !!python/tuple
+  - 1
+  - !!python/tuple
+    - 29
+  - *id002
+  - false
+  - !!binary |
+    kyzQtCUfQ0ByZ2H8XDNdQPczTraIx9U/6DMT+IL5EkAH2Cw+JOp9QLU5S2ee8n1A0+NQQhL6fUAN
+    Zsbjcf59QM6c/kzkAH5Aj+R6xUICfkBhr39SqezHPy5LNU/JLnlAHke/MmzbeEC47IIZ8JgCQUWT
+    kd/dV0xBtw4/r62vIUE6TZoM2f1SQagfM9SK8/VAsL+mCHhI5kBVHuTXGUejQRIIy/nzmYhAMYdb
+    5D6JOkBTIgJMS8JBQIqOK1Q4w0RAg61S1M2jb0F2pWNZZAdYQPRaqsF/SnBALmmi3OP1ekAcdjPY
+    UGSDQA==
+neurons_per_layer: 64
+num_hidden_layers: 3
+goal_per_class: null
+num_folds: 10
+num_epochs: 1000
+batch_size: 128
+learning_rate: 0.001
+best_val_loss: 1.8124194145202637

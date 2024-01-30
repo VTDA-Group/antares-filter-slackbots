@@ -90,6 +90,13 @@ def convert_fits_to_lc_obj(prefix, save_dir):
     
     ra_all = head_df["RA"].to_numpy()
     dec_all = head_df["DEC"].to_numpy()
+    mwebv_all = head_df["MWEBV"].to_numpy()
+    host_sep_all = head_df["HOSTGAL_SNSEP"].to_numpy()
+    
+    host_mag_all = []
+    for b in "ugrizY":
+        host_mag_all.append(head_df[f"HOSTGAL_MAG_{b}"].to_numpy())
+        
     names_all = head_df["SNID"].to_numpy()
     
     try:
@@ -110,12 +117,33 @@ def convert_fits_to_lc_obj(prefix, save_dir):
         
         ra = ra_all[i]
         dec = dec_all[i]
+        mwebv = mwebv_all[i]
+        host_sep = host_sep_all[i]
         
         sn_name = names_all[i].decode("utf-8").strip()
         t, f, ferr, b, ra, dec = adjust_lc(mjd, flux, flux_err, band, ra, dec)
         
+        host_mag_dict = {
+            "host_mag_u": host_mag_all[0][i],
+            "host_mag_g": host_mag_all[1][i],
+            "host_mag_r": host_mag_all[2][i],
+            "host_mag_i": host_mag_all[3][i],
+            "host_mag_z": host_mag_all[4][i],
+            "host_mag_Y": host_mag_all[5][i],
+        }
+        
         if t is not None:
-            lc = Lightcurve(t, f, ferr, b, name=sn_name, sn_class=labels_all[i])
+            lc = Lightcurve(
+                t, f, ferr, b,
+                name=sn_name,
+                sn_class=labels_all[i],
+                ra=ra,
+                dec=dec,
+                mwebv=mwebv,
+                host_sep=host_sep,
+                **host_mag_dict
+                
+            )
             save_fn = os.path.join(save_dir, sn_name + ".npz")
             lc.save_to_file(save_fn, overwrite=True)
     
@@ -134,16 +162,16 @@ def unfits_entire_directory(fits_dir, new_dir, lc_dir):
         save_dir2 = os.path.join(lc_dir, fits_fn.split('/')[-2])
         os.makedirs(save_dir, exist_ok=True)
         os.makedirs(save_dir2, exist_ok=True)
-        try:
-            save_fn = extract_fits_gz(fits_fn, save_dir)
-            convert_fits_to_lc_obj(save_fn[:-10], save_dir2)
-        except:
-            continue
+        #try:
+        save_fn = extract_fits_gz(fits_fn, save_dir)
+        convert_fits_to_lc_obj(save_fn[:-10], save_dir2)
+        #except:
+        #    continue
         
 if __name__ == "__main__":
-    fits_dir = "../elasticc2_dataset/"
-    save_dir = "../elasticc2_dataset_unzipped"
-    lc_dir = "../elasticc2_dataset_preprocessed"
+    fits_dir = "../../../../elasticc2_data/elasticc2_dataset/"
+    save_dir = "../../../../elasticc2_data/elasticc2_dataset_unzipped"
+    lc_dir = "../../../../elasticc2_data/elasticc2_dataset_preprocessed"
     unfits_entire_directory(fits_dir, save_dir, lc_dir)
     
         
