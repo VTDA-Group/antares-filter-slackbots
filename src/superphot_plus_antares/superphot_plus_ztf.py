@@ -1,31 +1,15 @@
 import antares.devkit as dk
 import numpy as np
-import extinction
-from astropy.coordinates import SkyCoord
 from tempfile import TemporaryDirectory
 import pickle
-import time
-import numpyro
-from numpyro.infer import SVI, Trace_ELBO
-from jax import random, jit
+from astropy.coordinates import SkyCoord
+import astropy.units as u
+import numpy as np
 
-from superphot_plus.supernova_class import SupernovaClass as SnClass
-from superphot_plus.model.lightgbm import SuperphotLightGBM
 from superphot_plus.samplers.dynesty_sampler import DynestySampler
-from superphot_plus.lightcurve import Lightcurve
-from superphot_plus.surveys.surveys import Survey
-from superphot_plus.utils import (
-    get_band_extinctions_from_mwebv,
-    convert_mags_to_flux
-)
-from superphot_plus.samplers.numpyro_sampler import (
-    NumpyroSampler,
-    _svi_helper_no_recompile,
-    lax_helper_function,
-    create_jax_model,
-    create_jax_guide
-)
-
+from superphot_plus.samplers.numpyro_sampler import SVISampler
+from superphot_plus.priors import generate_priors
+from snapi import Photometry
 
 class SuperphotPlusZTF(dk.Filter):
     NAME = "Superphot+ Supernovae Classification for ZTF"
@@ -36,107 +20,29 @@ class SuperphotPlusZTF(dk.Filter):
     
     INPUT_ALERT_PROPERTIES = [
         'ant_mjd',
-        'ztf_magpsf',
-        'ztf_fid', # 1=g, 2=r
-        'ztf_sigmapsf',
-        'ztf_magzpsci',
-        'ant_ra',
-        'ant_dec',
+        'ant_passband',
+        'ant_mag',
+        'ant_magerr',
     ]
     
+    PARAM_NAMES = generate_priors(["ZTF_r", "ZTF_g"]).dataframe['param']
+
     OUTPUT_LOCUS_PROPERTIES = [
         {
-            'name': 'superphot_plus_peak_amplitude',
+            'name': f'superphot_plus_{feat}',
             'type': 'float',
-            'description': 'Median peak amplitude (in flux units) from the Villar fit, as described in de Soto et al. 2024, calculated using dynesty nested sampling.',
-        },
-        
+            'description': f'Median {feat} from the Villar fit, as described in de Soto et al. 2024.',
+        } for feat in PARAM_NAMES
+    ] + [
         {
-            'name': 'superphot_plus_rel_plateau_slope',
+            'name': 'superphot_plus_score',
             'type': 'float',
-            'description': 'Median plateau slope (relative to maximum amplitude) from the Villar fit, as described in de Soto et al. 2024, calculated using dynesty nested sampling.',
-        },
-        
-        {
-            'name': 'superphot_plus_plateau_duration',
-            'type': 'float',
-            'description': 'Median plateau duration (in days) from the Villar fit, as described in de Soto et al. 2024, calculated using dynesty nested sampling.', 
-        },
-        
-        {
-            'name': 'superphot_plus_center_phase',
-            'type': 'float',
-            'description': 'Median "center"-ish phase (in days) from the Villar fit, as described in de Soto et al. 2024, calculated using dynesty nested sampling.',
-        },
-        
-        {
-            'name': 'superphot_plus_rise_timescale',
-            'type': 'float',
-            'description': 'Median rise timescale from the Villar fit, as described in de Soto et al. 2024, calculated using dynesty nested sampling.',
-        },
-        
-        {
-            'name': 'superphot_plus_fall_timescale',
-            'type': 'float',
-            'description': 'Median fall timescale from the Villar fit, as described in de Soto et al. 2024, calculated using dynesty nested sampling.',
-        },
-        
-        {
-            'name': 'superphot_plus_extra_sigma',
-            'type': 'float',
-            'description': 'Median extra uncertainty component from the Villar fit, as described in de Soto et al. 2024, calculated using dynesty nested sampling.',
-        },
-        
-        {
-            'name': 'superphot_plus_peak_amplitude_ratio',
-            'type': 'float',
-            'description': 'Median g-r amplitude ratio (color) from the Villar fit, as described in de Soto et al. 2024, calculated using dynesty nested sampling.',
-        },
-        
-        {
-            'name': 'superphot_plus_plateau_slope_ratio',
-            'type': 'float',
-            'description': 'Median g-r plateau slope ratio from the Villar fit, as described in de Soto et al. 2024, calculated using dynesty nested sampling.',
-        },
-        
-        {
-            'name': 'superphot_plus_plateau_duration_ratio',
-            'type': 'float',
-            'description': 'Median g-r plateau duration ratio from the Villar fit, as described in de Soto et al. 2024, calculated using dynesty nested sampling.',
-        },
-        
-        {
-            'name': 'superphot_plus_center_phase_offset',
-            'type': 'float',
-            'description': 'Median g-r center phase offset from the Villar fit, as described in de Soto et al. 2024, calculated using dynesty nested sampling.',
-        },
-        
-        {
-            'name': 'superphot_plus_rise_timescale_ratio',
-            'type': 'float',
-            'description': 'Median g-r rise timescale ratio from the Villar fit, as described in de Soto et al. 2024, calculated using dynesty nested sampling.',
-        },
-        
-        {
-            'name': 'superphot_plus_fall_timescale_ratio',
-            'type': 'float',
-            'description': 'Median g-r fall timescale ratio from the Villar fit, as described in de Soto et al. 2024, calculated using dynesty nested sampling.',
-        },
-        
-        {
-            'name': 'superphot_plus_extra_sigma_ratio',
-            'type': 'float',
-            'description': 'Median g-r extra uncertainty ratio from the Villar fit, as described in de Soto et al. 2024, calculated using dynesty nested sampling.',
-        },
-        {
-            'name': 'superphot_plus_reduced_chisquared',
-            'type': 'float',
-            'description': 'Median reduced chi-squared value of our Villar fit, as described in de Soto et al. 2024, calculated using dynesty nested sampling.',
+            'description': 'Median reduced chi-squared value of our Villar fit, as described in de Soto et al. 2024. Golf rules (lower score is better)',
         },
         {
             'name': 'superphot_plus_class',
             'type': 'str',
-            'description': 'Type of SN according to a multi-layer perceptron classifier detailed in de Soto et al. 2024. One of SNIa, SNIbc, SNII, SNIIn, or SLSN-I.',
+            'description': 'Type of SN according to a LightGBM classifier detailed in de Soto et al. 2024. One of SNIa, SNIbc, SNII, SNIIn, or SLSN-I.',
         },
         {
             'name': 'superphot_plus_class_prob',
@@ -144,16 +50,20 @@ class SuperphotPlusZTF(dk.Filter):
             'description': 'Probability associated with the most-likely SN type from the classifier detailed in de Soto et al. 2024.',
         },
         {
-            'name': 'superphot_plus_runtime',
-            'type': 'float',
-            'description': 'Sampler runtime of the Superphot+ ANTARES ZTF filter for this locus',
+            'name': 'superphot_plus_classifier',
+            'type': 'str',
+            'description': 'Classifier type (early or full, LightGBM or MLP, plus version) from de Soto et al. 2024 used for classification.',
         },
         {
             'name': 'superphot_plus_sampler',
             'type': 'str',
             'description': 'Sampler used for this locus in the Superphot+ ANTARES ZTF filter. First tries stochastic variational inference, then switches to dynesty nested sampling if the reduced chi-squared is too high.',
         },
-        
+        {
+            'name': 'superphot_plus_valid',
+            'type': 'int',
+            'description': 'Whether locus passes the catalog and light curve quality checks to be fit by the Superphot+ ANTARES ZTF filter. 1 if True and 0 if False. Loci previously tagged by Superphot+ that are no longer considered valid should be ignored by downstream tasks.',
+        },
     ]
     OUTPUT_ALERT_PROPERTIES = []
     OUTPUT_TAGS = [
@@ -164,47 +74,9 @@ class SuperphotPlusZTF(dk.Filter):
     ]
     
     REQUIRES_FILES = [
-        'superphot_plus_lightgbm_v1.pt',
+        'superphot_plus_lightgbm_12_2024_v3.pt',
+        'superphot_plus_early_lightgbm_12_2024_v3.pt'
     ]
-
-    
-    def import_lightcurve(self, mjd, m, merr, b, ra, dec):
-        """Create Superphot+ Lightcurve object and 
-        perform pre-processing.
-        """
-        coords = SkyCoord(ra, dec, frame="icrs", unit="deg")
-        mwebv = self.dustmap(coords)
-        ext_dict = get_band_extinctions_from_mwebv(
-            mwebv, self.survey.get_ordered_wavelengths()
-        )
-        b_str = np.where(b == 1, 'g', 'r')
-        m = np.where(b_str == 'g', m - ext_dict[1], m - ext_dict[0])
-        # convert mags to fluxes
-        f, ferr = convert_mags_to_flux(m, merr, self.zpt)
-
-        # make Superphot+ Lightcurve object
-        lc = Lightcurve(
-            mjd, f, ferr, b_str
-        )
-        max_flux, max_flux_loc = lc.find_max_flux(band='r')
-        lc.times -= max_flux_loc # phase LC
-        lc_padded = lc.pad_bands(self.survey.priors.ordered_bands, 30, in_place=False)
-
-        return lc, lc_padded, max_flux
-    
-    
-    def reformat_features(self, posteriors, max_flux):
-        """Reformat features to map Villar fit parameters (aka de-log them).
-        """
-        idxs_exponentiate = np.delete(np.arange(14), [1, 3, 10,])
-        post_reformatted = np.median(posteriors, axis=0)
-        post_reformatted[idxs_exponentiate] = 10**post_reformatted[idxs_exponentiate]
-        post_reformatted[[0, 6]] *= max_flux
-        round_values = (-1 * np.floor(np.log10(np.abs(post_reformatted)))).astype(int)
-        return np.asarray([
-            np.round(post_reformatted[i], round_values[i] + 2) for i in range(len(post_reformatted))
-        ]) # 3 sig figs
-        
         
     def setup(self):
         """
@@ -226,71 +98,76 @@ class SuperphotPlusZTF(dk.Filter):
         self.variable_catalogs = [
             "gaia_dr3_variability",
             "sdss_stars",
+            "bright_guide_star_cat",
             "asassn_variable_catalog_v2_20190802",
             "vsx",
-            "linear_ll"
+            "linear_ll",
+            "veron_agn_qso", # agn/qso
+            "milliquas", # qso
         ]
         
-        # create ZTF survey object
-        self.survey = Survey.ZTF()
-        self.zpt = 26.3 # approximate for ZTF
-        
-        # load Dynesty sampler object
-        self.dynesty_sampler = DynestySampler()
-        
-        # for property enumeration
-        self.output_properties = [
-            'peak_amplitude',
-            'rel_plateau_slope',
-            'plateau_duration',
-            'center_phase',
-            'rise_timescale',
-            'fall_timescale',
-            'extra_sigma',
-            'peak_amplitude_ratio',
-            'plateau_slope_ratio',
-            'plateau_duration_ratio',
-            'center_phase_offset',
-            'rise_timescale_ratio',
-            'fall_timescale_ratio',
-            'extra_sigma_ratio',
-            'reduced_chisquared'
-        ]
-        
-        self.classes_to_labels = SnClass.get_type_maps()[1]
-        # load classification model information
-        model_fn = self.files['superphot_plus_lightgbm_v1.pt'] # loads trained model file
+        # generate sampling priors
+        self.priors = generate_priors(["ZTF_r", "ZTF_g"])
+        self.random_seed = 42
 
-        self.model = pickle.loads(model_fn)
+        # initialize dynesty sampler object
+        self.dynesty_sampler = DynestySampler(
+            priors=self.priors,
+            random_state=self.random_seed
+        )
 
-        # initialize SVI
-        self.optimizer = numpyro.optim.Adam(step_size=0.001)
-        
-        def jax_model(t=None, obsflux=None, uncertainties=None, max_flux=None, ref_params=None):
-            create_jax_model(
-                self.survey.priors,
-                t, obsflux, uncertainties, max_flux,
-                ref_params
-            )
+        # for LC padding
+        self.fill = {'phase': 1000., 'flux': 0.1, 'flux_error': 1000., 'zeropoint': 23.90, 'upper_limit': False}
 
-        def jax_guide(**kwargs):  # pylint: disable=unused-argument
-            create_jax_guide(self.survey.priors)
-        
-        self.svi = SVI(jax_model, jax_guide, self.optimizer, loss=Trace_ELBO())
-        self.svi_state = None
-        self.num_iter = 10000
-        
-        self.lax_jit = jit(lax_helper_function, static_argnums=(0,2))
-        
-        # set seed
-        rng_key = random.PRNGKey(42)
-        rng_key, self.seed = random.split(rng_key)
+        # initialize SVI sampler object
+        self.svi_sampler = SVISampler(
+            priors=self.priors,
+            num_iter=10_000,
+            random_state=self.random_seed
+        )
 
+        # loads trained model files
+        full_model_fn = self.files['superphot_plus_lightgbm_12_2024_v3.pt'] 
+        self.full_model = pickle.loads(full_model_fn)
+        early_model_fn = self.files['superphot_plus_early_lightgbm_12_2024_v3.pt']
+        self.early_model = pickle.loads(early_model_fn)
+
+        # subset of features for early-phase classifier
+        self.early_input_features = self.PARAM_NAMES[~self.PARAM_NAMES.isin([
+            "gamma_ZTF_r", "gamma_ZTF_g", "tau_fall_ZTF_r", "tau_fall_ZTF_g"
+        ])]
+
+        self.score_cutoff = 1.2 # fits with reduced chisq above this are ignored
+        self._allowed_types = ['SLSN-I', 'SN Ia', 'SN Ibc', 'SN II', 'SN IIn']
+
+    
+    def quality_check(self, ts):
+        """Return True if all quality checks are passed, else False."""
+        if len(ts['ant_passband'].unique()) < 2: # at least 1 point in each band
+            return False
         
+        # ignore any events lasting longer than 200 days
+        # note, this will inevitably exclude some SNe, but that's fine
+        if np.ptp(ts['ant_mjd'].quantile([0.1, 0.9])) >= 200.:
+            return False
+        
+        if len(ts) < 5:
+            return True # don't do variability checks if < 5 points
+                
+        # first variability cut
+        if np.ptp(ts['ant_mag']) < 3 * ts['ant_magerr'].mean():
+            return False
+        
+        # second variability cut
+        if ts['ant_mag'].std() < ts['ant_magerr'].mean():
+            return False
+
+        return True
+
     def run(self, locus):
         """
         Runs a filter that fits all transients tagged with supernovae-like properties to the model
-        described by de Soto et al, TBD. Saves the median model parameters found using nested sampling
+        described by de Soto et al, 2024. Saves the median model parameters found using SVI or nested sampling
         to later be input into the classifier of choice. Then, inputs all posterior sample model parameters
         in a pre-trained classifier to estimate the most-likely SN class and confidence score.
         
@@ -299,81 +176,131 @@ class SuperphotPlusZTF(dk.Filter):
         locus : Locus object
             the SN-like transient to be fit
         """
+        # checks associated catalogs
         cats = locus.catalog_objects
-
         for cat in cats:
             if cat in self.variable_catalogs:
-                return None # marked as variable star
+                locus.properties['superphot_plus_valid'] = 0
+                return None # marked as variable star or AGN
         
-        # gets listed properties of each alert in Locus, sorted by MJD
-        ts = locus.timeseries[[
-            'ant_mjd', 'ztf_magpsf', 'ztf_sigmapsf',
-            'ztf_fid', 'ant_ra', 'ant_dec', 'ztf_magzpsci'
-        ]]   
-        ts_table = ts.to_pandas().to_numpy()
-        # filter out NaNs
-        skip_idx = np.any(np.isnan(ts_table[:,:4]), axis=1)
-        mjd, m, merr, b, ra, dec, zp = ts_table[~skip_idx].T
+        # gets dataframe with locus alerts, ordered by mjd
+        ts = locus.lightcurve[[
+            'ant_mjd', 'ant_mag', 'ant_magerr', 'ant_passband'
+        ]].to_pandas()
 
-        # if LC longer than 200 days, probably not a transient (so skip)
-        try:
-            if ( np.nanmax(mjd) - np.nanmin(mjd) >= 200 ):
-                return None
-            ra = np.median(ra[~np.isnan(ra)])
-            dec = np.median(dec[~np.isnan(dec)])
-        except:
-            return None
-        
-        if len(mjd[b == 1]) < 2: # need more data to fit
-            return None
-        if len(mjd[b == 2]) < 2:
-            return None
-        
-        #try:
-        lc, lc_padded, max_flux = self.import_lightcurve(mjd, m, merr, b, ra, dec)
+        # removes rows with nan values
+        ts.dropna(inplace=True)
 
-        start_time = time.time()
-        posts, red_chisq, self.svi_state = _svi_helper_no_recompile(
-            lc_padded,
-            max_flux,
-            self.survey.priors,
-            self.svi,
-            self.svi_state,
-            self.lax_jit,
-            self.num_iter,
-            self.seed # seed
+        # drops i-band data
+        ts = ts[ts['ant_passband'] != 'i']
+
+        if not self.quality_check(ts):
+            locus.properties['superphot_plus_valid'] = 0
+            return None
+
+        # renames dataframe to be SNAPI-compatible
+        ts.rename(columns={
+            'ant_mjd': 'mjd',
+            'ant_mag': 'mag',
+            'ant_magerr': 'mag_error',
+            'ant_passband': 'filter'
+        }, inplace=True)
+
+        ts['filt_center'] = np.where(
+            ts['filter'] == 'R',
+            6366.38, 4746.48
         )
-        if posts is None or np.median(red_chisq) > 0.8:
-            self.svi_state = None # reinitialize for future SVI fits
-            posts = self.dynesty_sampler.run_single_curve(
-                lc, self.survey.priors
-            ).samples
-            if posts is None:
-                return None
-            locus.properties['superphot_plus_sampler'] = 'dynesty'
-        else:
-            posts = np.hstack((posts, red_chisq[np.newaxis, :].T))
-            locus.properties['superphot_plus_sampler'] = 'svi'
-            
-        locus.properties['superphot_plus_runtime'] = time.time() - start_time
+        ts['filt_width'] = np.where(
+            ts['filter'] == 'R',
+            1553.43, 1317.15
+        )
+        ts['filter'] = np.where(
+            ts['filter'] == 'R',
+            'ZTF_r', 'ZTF_g'
+        )
+        ts['zeropoint'] = 23.90 # AB mag
 
-        posts_reformatted = self.reformat_features(posts, max_flux)
-        # save each mean model parameter in locus properties
-        for i in range(len(posts_reformatted)):
-            locus.properties[
-                f"superphot_plus_{self.output_properties[i]}"
-            ] = posts_reformatted[i]
+        # phases, normalizes, and extinction-corrects photometry
+        phot = Photometry(ts) # SNAPI photometry object
+        phot.phase(inplace=True)
+        phot.truncate(min_t=-50., max_t=100.)
+
+        if len(phot) < 2: # removed a filter
+            locus.properties['superphot_plus_valid'] = 0
+            return None
         
-        training_params = np.delete(posts, [0, 3], axis=1)
-        probs = self.model.classify_from_fit_params(training_params)
-        probs_avg = np.mean(probs, axis=0)
-        pred_class = np.argmax(probs_avg)
-        class_confidence = np.max(probs_avg)
-        pred_sn_type = self.classes_to_labels[pred_class]
-        
+        phot.correct_extinction(
+            coordinates=SkyCoord(ra = locus.ra * u.deg, dec = locus.dec * u.deg),
+            inplace=True
+        )
+        phot.normalize(inplace=True)
+
+        # create padded photometry for use in SVI
+        padded_lcs = []
+        orig_size = len(phot.detections)
+        num_pad = int(2**np.ceil(np.log2(orig_size)))
+        for lc in phot.light_curves:
+            padded_lc=lc.pad(self.fill, num_pad - len(lc.detections))
+            padded_lcs.append(padded_lc)
+        padded_phot = Photometry.from_light_curves(padded_lcs)
+
+        # fit with SVI and extract result
+        self.svi_sampler.reset() # reinitialize for future SVI fits
+        self.svi_sampler.fit_photometry(padded_phot, orig_num_times=orig_size)
+        res = self.svi_sampler.result
+
+        # only check the reduced chisq if there are at least 8 datapoints,
+        # because calculation breaks down for small number of observations
+        if (orig_size >= 8) and (np.median(res.score) > self.score_cutoff):
+            # poor fit = reset SVI and use dynesty instead
+            self.dynesty_sampler.fit_photometry(phot)
+            res_dynesty = self.dynesty_sampler.result
+
+            # check whether SVI or dynesty performed better
+            if np.median(res_dynesty.score[:100]) < np.median(res.score[:100]):
+                sampler, results = 'dynesty', res_dynesty            
+            else:
+                sampler, results = 'svi', res
+        else:
+            # SVI fit is fine
+            sampler, results = 'svi', res
+
+        for param in results.fit_parameters.columns:
+            locus.properties[f'superphot_plus_{param}'] = results.fit_parameters[param].median()
+
+        # save sampler and fit score to output properties
+        locus.properties['superphot_plus_sampler'] = sampler
+        locus.properties['superphot_plus_score'] = np.median(results.score)
+
+        # remove fits with reduced chisq above score cutoff
+        if orig_size >= 8:
+            valid_fits = results.fit_parameters[results.score <= self.score_cutoff]
+            if len(valid_fits) == 0:
+                return None
+        else:
+            valid_fits = results.fit_parameters
+
+        # check which fits place all observations before piecewise transition
+        early_fit_mask = valid_fits['gamma_ZTF_r'] + valid_fits['t_0_ZTF_r'] > np.max(phot.times)
+
+        # convert fit parameters back to uncorrelated Gaussian draws
+        uncorr_fits = self.priors.reverse_transform(valid_fits)
+
+        # fix index for groupby() operations within model.evaluate()
+        uncorr_fits.index = [locus.locus_id,] * len(uncorr_fits)
+
+        if len(valid_fits[early_fit_mask]) > len(valid_fits[~early_fit_mask]):
+            # use early-phase classifier
+            probs_avg = self.early_model.evaluate(uncorr_fits[self.early_input_features])
+            locus.properties['superphot_plus_classifier'] = 'early_lightgbm_12_2024'
+        else:
+            # use full-phase classifier
+            probs_avg = self.full_model.evaluate(uncorr_fits)
+            locus.properties['superphot_plus_classifier'] = 'full_lightgbm_12_2024'
+            
+        probs_avg.columns = np.sort(self._allowed_types)
+
         # set predicted SN class and output probability of that classification
-        locus.properties['superphot_plus_class'] = pred_sn_type
-        locus.properties['superphot_plus_class_prob'] = np.round(class_confidence.item(), 3)
-        
-        locus.tag('superphot_plus_classified')
-        
+        locus.properties['superphot_plus_class'] = probs_avg.idxmax(axis=1).iloc[0]
+        locus.properties['superphot_plus_class_prob'] = np.round(probs_avg.max(axis=1).iloc[0], 3)
+        locus.tag('superphot_plus_classified')        
