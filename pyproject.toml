@@ -1,5 +1,5 @@
 [project]
-name = "superphot-plus-antares"
+name = "antares-filter-slackbots"
 license = {file = "LICENSE"}
 readme = "README.md"
 authors = [
