@@ -11,6 +11,8 @@ from astro_ghost.photoz_helper import calc_photoz
 import glob
 from datetime import datetime, timedelta
 import subprocess
+from pathlib import Path
+
 
 import antares_client
 import pandas as pd
@@ -72,8 +74,9 @@ class RankingFilter:
                 os.path.dirname(__file__)
             ) # src
         ), "data", name)
-        print(self.save_prefix)
+        os.makedirs(self.save_prefix, exist_ok=True)
 
+        self.name = name
         self._filt = filter_obj
         self.channel = channel
         self.ranked_property = ranking_property
@@ -158,20 +161,6 @@ class RankingFilter:
         """Validate whether resulting locus
         meets criteria for being saved/ranked.
         """
-        var_catalogs = [
-            "gaia_dr3_variability",
-            "sdss_stars",
-            "bright_guide_star_cat",
-            "asassn_variable_catalog_v2_20190802",
-            "vsx",
-            "linear_ll",
-            "veron_agn_qso", # agn/qso
-            "milliquas", # qso
-        ]
-        for cat in locus.catalog_objects:
-            if cat in var_catalogs:
-                return False
-
         for t in self._post_filt_tags:
             if t not in locus.tags:
                 return False
@@ -205,7 +194,16 @@ class ANTARESRanker:
             self,
             lookback_days=1.,
         ):
-        getGHOST(real=False)
+        dustmaps_config.reset()
+        dustmaps_config['data_dir'] = os.path.join(
+            Path(__file__).parent.parent.parent.absolute(),
+            "data/dustmaps"
+        )
+        self._ghost_path = os.path.join(
+            Path(__file__).parent.parent.parent.absolute(), "data/ghost"
+        )
+        os.makedirs(self._ghost_path, exist_ok=True)
+        getGHOST(real=True, installpath=self._ghost_path)
         self._lookback = lookback_days
         self._query = []
 
@@ -252,6 +250,26 @@ class ANTARESRanker:
         }
         return antares_client.search.search(full_query)
     
+    def star_catalog_check(self, locus):
+        """Check whether locus is in star or AGN catalog.
+        """
+        var_catalogs = [
+            "gaia_dr3_variability",
+            "sdss_stars",
+            "bright_guide_star_cat",
+            "asassn_variable_catalog_v2_20190802",
+            "vsx",
+            "linear_ll",
+            "veron_agn_qso", # agn/qso
+            "milliquas", # qso
+        ]
+        for cat in locus.catalog_objects:
+            if cat in var_catalogs:
+                return False
+            
+        return True
+    
+            
     def process_query_results(self, loci, filt: RankingFilter):
         """Validate post-query loci and save as dataframe.
         """
@@ -259,13 +277,13 @@ class ANTARESRanker:
         for i, locus in enumerate(loci):
             if i % 100 == 0:
                 print(f"Processed {i} loci...")
-            if i == 400:
-                break
+            if not self.star_catalog_check(locus):
+                continue
             filt.apply(locus)
             if not filt.validate_result(locus):
                 continue
 
-            if 'tns_public_objects' in locus.catalogs:
+            if 'tns_public_objects' in locus.catalog_objects:
                 tns = locus.catalog_objects['tns_public_objects'][0]
                 tns_name, tns_cls, tns_redshift = tns['name'], tns['type'], tns['redshift']
                 if tns_cls == '':
@@ -273,6 +291,7 @@ class ANTARESRanker:
             else:
                 tns_name = '---'
                 tns_cls = '---'
+                tns_redshift = np.nan
 
             locus_dict = {
                 'antid': locus.locus_id,
@@ -302,7 +321,6 @@ class ANTARESRanker:
         locus_df = pd.DataFrame.from_records(locus_dicts)
         locus_df.set_index('antid', inplace=True)
         full_locus_df = self.add_host_galaxy_info(locus_df)
-        #full_locus_df = locus_df
         return full_locus_df
     
     def add_host_galaxy_info(self, df):
@@ -325,8 +343,8 @@ class ANTARESRanker:
                         hosts.loc[hosts.NED_redshift.isna(), :],
                         dust_path=dustmaps_config['data_dir'],
                         model_path=os.path.join(
-                            os.path.dirname(__file__),
-                            "filters/data/MLP_lupton.hdf5"
+                            Path(__file__).parent.parent.parent.absolute(),
+                            "data/MLP_lupton.hdf5"
                         )
                     )
                     photo_z_hosts = photo_z_hosts.loc[:, ['TransientName', 'photo_z']]
@@ -342,7 +360,11 @@ class ANTARESRanker:
         if merged_hosts is None:
             raise ConnectionError("Could not retrieve host info")
         
-        
+        # add to ghost table
+        fullTable = pd.read_csv(os.path.join(self._ghost_path,"database/GHOST.csv"))
+        fullTable = pd.concat([fullTable, merged_hosts], ignore_index=True).drop_duplicates(subset=['TransientName'])
+        fullTable.to_csv(os.path.join(self._ghost_path,"database/GHOST.csv"),index=False)
+
         hosts_subdf = merged_hosts.loc[:,[
             'NED_name', 'dist', 'objName', 'NED_redshift', 'photo_z', 'TransientName'
         ]]
@@ -427,7 +449,7 @@ class ANTARESRanker:
     def run(self, filt, max_num):
         """Run full cycle of the ANTARESRanker.
         """
-        print("Running ANTARESRanker")
+        print("Running ANTARESRanker for filter "+filt.name)
         filt.setup()
         self.reset_query()
         self.check_watch()
@@ -436,7 +458,7 @@ class ANTARESRanker:
         loci = self.run_query()
         df = self.process_query_results(loci, filt)
         if df is None:
-            slack_loci = SlackPoster(None, {})
+            slack_loci = SlackPoster(None, {}, filt.save_prefix)
             slack_loci.post_empty(filt.channel)
             return
 
@@ -455,7 +477,7 @@ class ANTARESRanker:
             for v in vals:
                 filt_meta[f'overflow_{v}'] = (len(df[df[k] == v]) < len(df_pruned[df_pruned[k] == v]))
 
-        slack_loci = SlackPoster(df_pruned, filt_meta)
+        slack_loci = SlackPoster(df_pruned, filt_meta, filt.save_prefix)
         slack_loci.post(filt.channel)
 
         # save to local df
@@ -463,13 +485,13 @@ class ANTARESRanker:
         return
 
     def save_objects(self, df, save_prefix, append=True):
-        save_fn = save_prefix + "_loci.csv"
+        save_fn = os.path.join(save_prefix, "loci.csv")
         if (not os.path.exists(save_fn)) or (not append):
             df.to_csv(save_fn)
 
         else:
-            orig_df = pd.read_csv(save_fn)
+            orig_df = pd.read_csv(save_fn, index_col=0)
             merged_df = pd.concat([orig_df, df])
             # keep the last occurrence of each duplicate row -- (most up to date)
-            merged_df.drop_duplicates(keep='last', inplace=True)
+            merged_df = merged_df[~merged_df.index.duplicated(keep='last')]
             merged_df.to_csv(save_fn) # overwrite the old file with unique new + old objects

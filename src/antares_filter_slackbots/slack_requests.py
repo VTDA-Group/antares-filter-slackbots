@@ -35,14 +35,22 @@ def get_conversation_history(channel):
 
 
 def send_slack_message(client, channel, attachments):
-    # Sending the message to Slack
-    response = client.chat_postMessage(
-        channel=channel,
-        text="Fallback text",  # This is plain text for clients that don’t support blocks
-        blocks=attachments
-    )
+    if len(attachments) > 50:
+        attachments_send = attachments[:50]
+        remainder = attachments[50:]
 
-    if response['ok']:
-        print("Message posted successfully.")
+        send_slack_message(client, channel, attachments_send)
+        send_slack_message(client, channel, remainder)
+    
     else:
-        print(f"Error posting message: {response['error']}")
+        # Sending the message to Slack
+        response = client.chat_postMessage(
+            channel=channel,
+            text="Fallback text",  # This is plain text for clients that don’t support blocks
+            blocks=attachments
+        )
+
+        if response['ok']:
+            print("Message posted successfully.")
+        else:
+            print(f"Error posting message: {response['error']}")

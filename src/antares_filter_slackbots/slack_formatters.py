@@ -7,15 +7,84 @@ import re
 from flask import Flask, request
 from slack_bolt.adapter.flask import SlackRequestHandler
 
-from superphot_plus_antares.slack_requests import (
+from antares_filter_slackbots.slack_requests import (
     send_slack_message,
     setup_app,
     setup_client
 )
 
+def generate_context_block(df, obj_id):
+    """Construct context block with previous votes for object.
+    """
+    votes = {}
+
+    if df is None:
+        return {
+            "type": "context",
+            "elements": [{
+                "type": "plain_text",
+                "text": "No votes yet."
+            }],
+            "block_id": f"votes_{obj_id}"
+        }
+    
+    sub_df = df.loc[df.index == obj_id]
+
+    if len(sub_df) == 0:
+        return {
+            "type": "context",
+            "elements": [{
+                "type": "plain_text",
+                "text": "No votes yet."
+            }],
+            "block_id": f"votes_{obj_id}"
+        }
+
+    for row in sub_df.itertuples(): # users
+        vote = row.Response
+        votes[row.UserName] = vote
+
+    votes_text = []
+    for (name, vote) in votes.items():
+        if vote == 'upvote':
+            votes_text.append(
+                {
+                    "type": "plain_text",
+                    "text": f"{name} marked this event as relevant."
+                }
+            )
+        elif vote == 'strong_upvote':
+            votes_text.append(
+                {
+                    "type": "plain_text",
+                    "text": f"{name} marked this event as high priority."
+                }
+            )
+        elif vote == 'downvote':
+            votes_text.append(
+                {
+                    "type": "plain_text",
+                    "text": f"{name} marked this event as not relevant."
+                }
+            )
+        elif vote == 'AGN':
+            votes_text.append(
+                {
+                    "type": "plain_text",
+                    "text": f"{name} marked this event as an AGN."
+                }
+            )
+        else:
+            continue
+
+    return {
+        "type": "context",
+        "elements": votes_text,
+        "block_id": f"votes_{obj_id}"
+    }
 
 class SlackPoster:
-    def __init__(self, loci_df, filt_meta):
+    def __init__(self, loci_df, filt_meta, save_prefix):
         '''
         Reformats locus information for Slack posting.
 
@@ -30,6 +99,15 @@ class SlackPoster:
         self._df = loci_df
         self._meta = filt_meta
 
+        # Where to save voting history
+        self._votes_fn = os.path.join(save_prefix, "voting_history.csv")
+        self.filter_name = save_prefix.split("/")[-1]
+        
+        if os.path.exists(self._votes_fn):
+            self._vote_df = pd.read_csv(self._votes_fn, index_col=0)
+        else:
+            self._vote_df = None
+
     def round_sigfigs(self, x, sig=4):
         """Round numerics to sig significant figures.
         """
@@ -41,6 +119,8 @@ class SlackPoster:
             else:
                 return round(x, -int(np.floor(np.log10(abs(x)))) + (sig - 1))
         elif isinstance(x, str) and x == '':
+            return '---'
+        elif x is None:
             return '---'
         
         return x  # Return as-is if not numeric
@@ -57,7 +137,11 @@ class SlackPoster:
     def ps1_pic(self, row):
         """Retrive PS1 image url of entry."""
         if row.dec > -30:
-            return geturl(row.ra, row.dec, color=True)
+            for _ in range(5): # 5 attempts
+                try:
+                    return geturl(row.ra, row.dec, color=True)
+                except:
+                    continue
         
         return None
        
@@ -72,7 +156,7 @@ class SlackPoster:
                         "text": " :yesagn: "
                     },
                     "value": "AGN",
-                    "action_id": f"vote_agn_{suffix}"
+                    "action_id": f"vote$agn${self.filter_name}${suffix}"
                 },
                 {
                     "type": "button",
@@ -81,7 +165,7 @@ class SlackPoster:
                         "text": " :thumbsup: "
                     },
                     "value": "upvote",
-                    "action_id": f"vote_upvote_{suffix}"
+                    "action_id": f"vote$upvote${self.filter_name}${suffix}"
                 },
                 {
                     "type": "button",
@@ -90,7 +174,7 @@ class SlackPoster:
                         "text": " :thumbsup::thumbsup: "
                     },
                     "value": "strong_upvote",
-                    "action_id": f"vote_strongupvote_{suffix}"
+                    "action_id": f"vote$strongupvote${self.filter_name}${suffix}"
                 },
                 {
                     "type": "button",
@@ -99,7 +183,7 @@ class SlackPoster:
                         "text": " :thumbsdown: "
                     },
                     "value": "downvote",
-                    "action_id": f"vote_downvote_{suffix}"
+                    "action_id": f"vote$downvote${self.filter_name}${suffix}"
                 }
             ]
         }
@@ -192,16 +276,7 @@ class SlackPoster:
 
         attachment.append(self.voting_action(row.name))
 
-        attachment.append( # this is where the votes are gonna be printed
-            {
-                "type": "context",
-                "elements": [{
-                    "type": "plain_text",
-                    "text": "No votes yet."
-                }],
-                "block_id": f"votes_{row.name}"
-            },
-        )
+        attachment.append(generate_context_block(self._vote_df, row.name)) # this is where the votes are gonna be printed
 
         attachment.append(
             {
@@ -293,7 +368,7 @@ class SlackVoteHandler:
         self.app = setup_app()
 
         # Register action listeners
-        self.app.action(re.compile(r"vote_.*"))(self.handle_report_feedback)
+        self.app.action(re.compile(r"vote\$*"))(self.handle_object_vote)
 
         # Set up Flask integration
         self.flask_app = Flask(__name__)
@@ -302,96 +377,65 @@ class SlackVoteHandler:
         # Define the route to handle incoming Slack events
         self.flask_app.route("/slack/events", methods=["POST"])(self.slack_events)
 
+
+    def load_votes_df(self, filter_name):
+        """Load dataframe with votes.
+        """
         # Where to save voting history
-        self._votes_fn = os.path.join(os.path.dirname(
+        votes_fn = os.path.join(os.path.dirname(
             os.path.dirname(
                 os.path.dirname(__file__),
             )
-        ), "data", "voting_history.csv")
+        ), "data", filter_name, "voting_history.csv")
         
-        if os.path.exists(self._votes_fn):
-            self._vote_df = pd.read_csv(self._votes_fn, index_col=0)
+        if os.path.exists(votes_fn):
+            vote_df = pd.read_csv(votes_fn, index_col=0)
         else:
-            self._vote_df = None
+            vote_df = None
 
+        return vote_df, votes_fn
 
-    def handle_report_feedback(self, ack, body, client):
+    def handle_object_vote(self, ack, body, client):
         ack()
-        print(body)
         user_id = body['user']['id']
         user_name = body['user']['name']
         action = body['actions'][0]
         action_value = action['value']
-        antid = action['action_id'].split("_")[-1]
+        antid = action['action_id'].split("$")[-1]
+        filter_name = action['action_id'].split("$")[-2]
 
-        if (self._vote_df is not None) and (antid in self._vote_df.index) and (
-            user_id in self._vote_df.columns
-        ) and (
-            self._vote_df.loc[antid, user_id] != ''
-        ):
-            client.chat_postEphemeral(
-                channel=body['channel']['id'],
-                user=user_id,
-                text="Voted previously; vote has been updated."
-            )
+        vote_df, _ = self.load_votes_df(filter_name)
+
+        if vote_df is not None:
+
+            mask = (vote_df.index == antid) & (vote_df.UserID == user_id)
+
+            if (vote_df is not None) and (len(vote_df.loc[mask]) > 0):
+                client.chat_postEphemeral(
+                    channel=body['channel']['id'],
+                    user=user_id,
+                    text="Voted previously; vote has been updated."
+                )
         
-        self.record_vote(action_value, antid, user_id, user_name)
-        self.update_slack_message(body, client)
+        self.record_vote(action_value, antid, user_id, user_name, filter_name)
+        self.update_slack_message(body, client, filter_name)
 
-    def update_slack_message(self, body, client):
+
+    def update_slack_message(self, body, client, filter_name):
         """From vote DF and event, update message.
         """
         action = body['actions'][0]
-        obj_id = action['action_id'].split("_")[-1]
+        obj_id = action['action_id'].split("$")[-1]
         blocks = body["message"]["blocks"]
         
         idx, _ = [x for x in enumerate(blocks) if x[1]['block_id'] == f"votes_{obj_id}"][0]
 
-        # Reconstruct the votes text
-        votes = {}
-        for c in self._vote_df.columns: # users
-            vote = self._vote_df.loc[obj_id, c]
-            if vote != '':
-                votes[self._vote_df.loc['name', c]] = vote
+        vote_df, _ = self.load_votes_df(filter_name)
+        if vote_df is None:
+            return None
 
-        votes_text = []
-        for (name, vote) in votes.items():
-            if vote == 'upvote':
-                votes_text.append(
-                    {
-                        "type": "plain_text",
-                        "text": f"{name} marked this event as relevant."
-                    }
-                )
-            elif vote == 'strong_upvote':
-                votes_text.append(
-                    {
-                        "type": "plain_text",
-                        "text": f"{name} marked this event as high priority."
-                    }
-                )
-            elif vote == 'downvote':
-                votes_text.append(
-                    {
-                        "type": "plain_text",
-                        "text": f"{name} marked this event as not relevant."
-                    }
-                )
-            elif vote == 'AGN':
-                votes_text.append(
-                    {
-                        "type": "plain_text",
-                        "text": f"{name} marked this event as an AGN."
-                    }
-                )
-            else:
-                continue
-
-        blocks[idx] = {
-            "type": "context",
-            "elements": votes_text,
-            "block_id": f"votes_{obj_id}"
-        }
+        new_context_block = generate_context_block(vote_df, obj_id)
+        blocks[idx] = new_context_block
 
         # Update the Slack message
         client.chat_update(
@@ -401,19 +445,34 @@ class SlackVoteHandler:
             text="Fallback text"
         )
 
-    def record_vote(self, vote, obj_id, user_id, user_name):
+    def record_vote(self, vote, obj_id, user_id, user_name, filter_name):
         """Adds vote to dataframe with previous
         votes to avoid repeats.
         """
-        if self._vote_df is None:
-            self._vote_df = pd.DataFrame(
-                {user_id: user_name},
-                index=['name',]
+        vote_df, vote_fn = self.load_votes_df(filter_name)
+        if vote_df is None:
+            vote_df = pd.DataFrame(
+                {'UserID': user_id, 'UserName': user_name, 'Response': vote},
+                index=[obj_id,]
             )
-        if user_id not in self._vote_df.columns:
-            self._vote_df.loc['name', user_id] = user_name
-        self._vote_df.loc[obj_id, user_id] = vote
-        self._vote_df.to_csv(self._votes_fn)
+            vote_df.index.name = 'Transient'
+
+        mask = (vote_df.index == obj_id) & (vote_df.UserID == user_id)
+
+        if len(vote_df.loc[mask]) > 0:
+            vote_df.loc[mask, 'UserID'] = user_id
+            vote_df.loc[mask, 'UserName'] = user_name
+            vote_df.loc[obj_id, 'Response'] = vote
+
+        else:
+            new_df = pd.DataFrame(
+                {'UserID': user_id, 'UserName': user_name, 'Response': vote},
+                index=[obj_id,]
+            )
+            new_df.index.name = 'Transient'
+            vote_df = pd.concat([vote_df, new_df])
+
+        vote_df.to_csv(vote_fn)
 
     def slack_events(self):
         return self.handler.handle(request)

@@ -1,0 +1,54 @@
+lightcurve:
+    feature_amplitude_magn: Half amplitude of magnitude
+    feature_anderson_darling_normal_magn: Unbiased Anderson–Darling normality test statistic for magnitude
+    feature_beyond_1_std_magn: Fraction of observations n = 1-sigma beyond the mean magnitude ⟨m⟩
+    feature_beyond_2_std_magn: Fraction of observations n = 2-sigma beyond the mean magnitude ⟨m⟩
+    feature_cusum_magn: A range of cumulative sums dependent on the number of observations, mean magnitude, and magnitud standard deviation
+    feature_inter_percentile_range_2_magn: Inter-percentile range for p = 0.02, where p is the pth quantile of the magnitude distribution
+    feature_inter_percentile_range_10_magn: Inter-percentile range for p = 0.10, where p is the pth quantile of the magnitude distribution
+    feature_inter_percentile_range_25_magn: Inter-percentile range for p = 0.25, where p is the pth quantile of the magnitude distribution
+    feature_kurtosis_magn: Excess kurtosis of magnitude
+    feature_linear_fit_slope_magn:  The slope of the light curve in the least squares fit of the linear stochastic model with Gaussian noise described by observation errors
+    feature_linear_fit_slope_sigma_magn:  The err on the slope of the light curve in the least squares fit of the linear stochastic model with Gaussian noise described by observation errors
+    feature_magnitude_percentage_ratio_40_5_magn: The magnitude 40 to 5 ratio, written in terms of the magnitude distribution quantile function Q
+    feature_magnitude_percentage_ratio_20_5_magn: The magnitude 20 to 5 ratio, written in terms of the magnitude distribution quantile function Q
+    feature_mean_magn: The non-weighted mean magnitude
+    feature_median_absolute_deviation_magn: The median of the absolute value of the difference between magnitude and its median
+    feature_percent_amplitude_magn: The maximum deviation of magnitude from its median
+    feature_median_buffer_range_percentage_10_magn: Fraction of observations inside Median(m)±10×(max(m)-min(m))/2 interval
+    feature_median_buffer_range_percentage_20_magn: Fraction of observations inside Median(m)±20×(max(m)-min(m))/2 interval
+    feature_percent_difference_magnitude_percentile_5_magn: Ratio of p=5th inter-percentile range to the median
+    feature_percent_difference_magnitude_percentile_10_magn: Ratio of p=10th inter-percentile range to the median
+    feature_skew_magn: Skewness of magnitude
+    feature_standard_deviation_magn: r"Standard deviation of magnitude, $\sigma_m$"
+    feature_stetson_k_magn: Stetson K coefficient described light curve shape of magnitude
+    feature_weighted_mean_magn: Weighted mean magnitude
+    feature_anderson_darling_normal_flux:  Unbiased Anderson–Darling normality test statistic for flux
+    feature_cusum_flux: A range of cumulative sums dependent on the number of observations, mean flux, and flux standard deviation
+    feature_excess_variance_flux: Measure of the flux variability amplitude
+    feature_kurtosis_flux:  Excess kurtosis of flux
+    feature_mean_variance_flux: Standard deviation of flux to mean flux ratio
+    feature_skew_flux: Skewness of flux
+    feature_stetson_k_flux: Stetson K coefficient described light curve shape of flux
+
+host:
+    momentXX: Host second-order moment MXX
+    momentXY: Host second-order moment MXY
+    momentYY: Host second-order moment MYY
+    momentR1: Host first radial moment
+    momentRH: Host half radial moment
+    PSFFlux: Host PSF flux
+    ApFlux: Host aperture flux
+    KronFlux: Host kron flux
+    KronRad: Host kron radius
+    ExtNSigma: Host extendedness
+
+host_nongeneric:
+    i-z: Host i-z
+    gApMag_gKronMag: Host aperture mag minus kron mag (shape param) in g
+    rApMag_rKronMag: Host aperture mag minus kron mag (shape param) in r
+    iApMag_iKronMag: Host aperture mag minus kron mag (shape param) in i
+    zApMag_zKronMag: Host aperture mag minus kron mag (shape param) in z
+    yApMag_yKronMag: Host aperture mag minus kron mag (shape param) in y
+    7DCD: Host 4D distance from Tonry stellar locus
+    dist/DLR: DLR-normalized angular offset

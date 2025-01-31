@@ -1,0 +1,2 @@
+antid,tns_name,tns_class,tns_redshift,LAISS_RFC_anomaly_score,ra,dec,peak_mag,peak_phase,shap_url,host_sep_arcsec,host_name,host_redshift,host_redshift_type,posted_before
+ANT20239isdpk4gf9z5,---,---,,33.0,1.8730432834001174,29.23472978870943,11.967599868774414,129.52239899129927,https://files.slack.com/files-pri/T9C5L6SPK-F08B92RLY8K/ant20239isdpk4gf9z5_forceplot.png?pub_secret=935332595c,6.239977275511318,,0.4671446385133906,PHOT,False

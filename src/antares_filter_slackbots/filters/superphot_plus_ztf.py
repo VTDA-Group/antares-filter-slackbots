@@ -1,11 +1,10 @@
 import antares.devkit as dk
 import numpy as np
 import os
-from tempfile import TemporaryDirectory
-import pickle
 from astropy.coordinates import SkyCoord
 import astropy.units as u
 import numpy as np
+from pathlib import Path
 
 from superphot_plus.samplers.dynesty_sampler import DynestySampler
 from superphot_plus.samplers.numpyro_sampler import SVISampler
@@ -88,9 +87,10 @@ class SuperphotPlusZTF(dk.Filter):
         # Loads SFDQuery object once to lower overhead
         from dustmaps.config import config
         config.reset()
-        self.tempdir = TemporaryDirectory(prefix='superphot_plus_sfds_')
-        #config['data_dir'] = self.tempdir.name
-        config['data_dir'] = '/tmp/'  # datalab
+        config['data_dir'] = os.path.join(
+            Path(__file__).parent.parent.parent.parent.absolute(),
+            "data/dustmaps"
+        )
         import dustmaps.sfd
         dustmaps.sfd.fetch()
         from dustmaps.sfd import SFDQuery
@@ -134,8 +134,14 @@ class SuperphotPlusZTF(dk.Filter):
         early_model_fn = self.files['superphot_plus_early_lightgbm_12_2024_v3.pt']
         """
         # replacement for local filter call
-        full_model_fn = os.path.dirname(__file__) + "/data/model_superphot_full.pt"
-        early_model_fn = os.path.dirname(__file__) + "/data/model_superphot_early.pt"
+        full_model_fn = os.path.join(
+            Path(__file__).parent.parent.parent.parent.absolute(),
+            "data/superphot-plus/model_superphot_full.pt"
+        )
+        early_model_fn = os.path.join(
+            Path(__file__).parent.parent.parent.parent.absolute(),
+            "data/superphot-plus/model_superphot_early.pt"
+        )
         self.full_model = SuperphotLightGBM.load(full_model_fn)
         self.early_model = SuperphotLightGBM.load(early_model_fn)
 
@@ -158,16 +164,23 @@ class SuperphotPlusZTF(dk.Filter):
         if np.ptp(ts['ant_mjd'].quantile([0.1, 0.9])) >= 200.:
             return False
         
-        if len(ts) < 5:
-            return True # don't do variability checks if < 5 points
-                
-        # first variability cut
-        if np.ptp(ts['ant_mag']) < 3 * ts['ant_magerr'].mean():
-            return False
         
-        # second variability cut
-        if ts['ant_mag'].std() < ts['ant_magerr'].mean():
-            return False
+        for b in ts['ant_passband'].unique():
+            sub_ts = ts.loc[ts['ant_passband'] == b,:]
+            if len(sub_ts) < 5:
+                continue # don't do variability checks if < 5 points
+            
+            # first variability cut
+            if np.ptp(sub_ts['ant_mag']) < 3 * sub_ts['ant_magerr'].mean():
+                return False
+            
+            # second variability cut
+            if sub_ts['ant_mag'].std() < sub_ts['ant_magerr'].mean():
+                return False
+            
+            # third variability cut
+            if np.ptp(sub_ts['ant_mag']) < 0.5: # < 0.5 mag spread
+                return False
 
         return True
 
@@ -192,8 +205,18 @@ class SuperphotPlusZTF(dk.Filter):
         
         # gets dataframe with locus alerts, ordered by mjd
         ts = locus.lightcurve[[
-            'ant_mjd', 'ant_mag', 'ant_magerr', 'ant_passband'
+            'ant_mjd', 'ant_mag', 'ant_magerr', 'ant_passband', 'ant_ra', 'ant_dec'
         ]]#.to_pandas() # may have to turn this back on for actual submission
+
+        if ts['ant_ra'].std() > 0.5 / 3600.: # arcsec
+            locus.properties['superphot_plus_valid'] = 0
+            return None # marked as variable star or AGN
+        
+        if ts['ant_dec'].std() > 0.5 / 3600.: # arcsec
+            locus.properties['superphot_plus_valid'] = 0
+            return None # marked as variable star or AGN
+        
+        ts.drop(columns=['ant_ra', 'ant_dec'], inplace=True)
 
         # removes rows with nan values
         ts.dropna(inplace=True)
