@@ -3,6 +3,9 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# archival stuff
+data/archival
+
 # secrets
 src/antares_filter_slackbots/auth.py
 
