@@ -5,6 +5,7 @@ import os
 import re
 
 from flask import Flask, request
+from werkzeug.middleware.proxy_fix import ProxyFix
 from slack_bolt.adapter.flask import SlackRequestHandler
 
 from antares_filter_slackbots.slack_requests import (
@@ -381,6 +382,13 @@ class SlackVoteHandler:
     def load_votes_df(self, filter_name):
         """Load dataframe with votes.
         """
+        os.makedirs(os.path.join(
+            os.path.dirname(
+                os.path.dirname(
+                    os.path.dirname(__file__),
+                )
+            ), "data", filter_name
+        ), exist_ok=True)
         # Where to save voting history
         votes_fn = os.path.join(os.path.dirname(
             os.path.dirname(
@@ -477,8 +485,8 @@ class SlackVoteHandler:
     def slack_events(self):
         return self.handler.handle(request)
 
-    def start(self, host="0.0.0.0", port=3000):
-        self.flask_app.run(host=host, port=port, debug=True)
+    def start(self, host="0.0.0.0", port=443):
+        self.flask_app.run(host=host, port=port, ssl_context=('/root/cert.pem', '/root/key.pem'))
 
 if __name__ == "__main__":
     slack_vote_handler = SlackVoteHandler()
