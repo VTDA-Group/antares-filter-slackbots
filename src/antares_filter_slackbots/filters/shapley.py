@@ -104,13 +104,10 @@ class ShapleyPlotLAISS(dk.Filter):
         plotpath = self.plot_shap(locus.locus_id, shap_features)
         filename = plotpath.split("/")[-1]
         response = self.upload_file(toku, locus.locus_id, plotpath)
-        print(response)
         file_id = response['file']['id']
         self.make_file_public(toku, file_id)
         initial_url = self.share_public_link(toku, file_id)
         final_url = self.format_url(initial_url, filename)
-        print("Final URL is...")
-        print(final_url)
         locus.properties["shap_url"] = final_url
         
     def plot_shap(self, antares_id, shap_features):
@@ -139,34 +136,9 @@ class ShapleyPlotLAISS(dk.Filter):
         print(f"File successfully saved at {filepath}.")
         return filepath
 
-    def get_accessible_channel_ids(self, token):
-        url = "https://slack.com/api/conversations.list"
-        headers = {
-            "Authorization": f"Bearer {token}"
-        }
-        params = {
-            "limit": 1000,  # limit the number of channels returned, adjust as necessary
-        }
-
-        response = requests.get(url, headers=headers, params=params)
-        channels_info = response.json()
-        print(channels_info)
-
-        channel_ids = []
-        if channels_info.get('ok'):
-            channels = channels_info.get('channels', [])
-            for channel in channels:
-                channel_ids.append(channel['id'])
-                print(f"Channel name: {channel['name']}, Channel ID: {channel['id']}")
-        else:
-            print("Error fetching channels:", channels_info.get('error'))
-
-        return channel_ids
-
     def upload_file(self, token, antares_id, file_path):
         """Upload file to Slack.
         """
-        #self.get_accessible_channel_ids(token)
         url = "https://slack.com/api/files.upload"
         headers = {
             "Authorization": f"Bearer {token}"
@@ -178,7 +150,6 @@ class ShapleyPlotLAISS(dk.Filter):
             "channels": self.channel_id,
             "initial_comment": f"Here is the SHAP plot for {antares_id}",
         }
-        print(data)
         response = requests.post(url, headers=headers, files=files, data=data)
         return response.json()
 
@@ -193,7 +164,6 @@ class ShapleyPlotLAISS(dk.Filter):
             "file": file_id
         }
         response = requests.post(url, headers=headers, data=data)
-        print(response)
         return response.json()
 
     def share_public_link(self, token, file_id):
@@ -207,7 +177,6 @@ class ShapleyPlotLAISS(dk.Filter):
             "file": file_id
         }
         response = requests.get(url, headers=headers, params=params)
-        print(response.json())
         public_url = response.json()['file']['permalink_public']
         return public_url
 

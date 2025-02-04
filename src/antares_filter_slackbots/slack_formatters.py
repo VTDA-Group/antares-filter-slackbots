@@ -19,6 +19,7 @@ def generate_context_block(df, obj_id):
     votes = {}
 
     if df is None:
+        print(
         return {
             "type": "context",
             "elements": [{
@@ -29,6 +30,7 @@ def generate_context_block(df, obj_id):
         }
     
     sub_df = df.loc[df.index == obj_id]
+    print(sub_df)
 
     if len(sub_df) == 0:
         return {
