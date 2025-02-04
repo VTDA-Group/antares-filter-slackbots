@@ -20,7 +20,6 @@ def generate_context_block(df, obj_id):
     votes = {}
 
     if df is None:
-        print(
         return {
             "type": "context",
             "elements": [{
