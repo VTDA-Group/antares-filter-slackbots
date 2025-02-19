@@ -8,7 +8,7 @@ data/archival
 
 # secrets
 src/antares_filter_slackbots/auth.py
-
+src/antares_filter_slackbots/nohup.out
 # C extensions
 *.so
 

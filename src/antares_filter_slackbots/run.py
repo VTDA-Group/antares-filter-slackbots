@@ -9,9 +9,24 @@ def all_current_filters():
     all_filters = [
         # superphot-plus filter
         RankingFilter(
+            "superphot-plus-bright",
+            SuperphotPlusZTF(),
+            "#superphot-plus-bright-followup", # change
+            "superphot_plus_class_prob",
+            pre_filter_properties = {
+                "oldest_alert_observation_time": (current_time-20., 99_999_999,),
+                "num_mag_values": (3, 50),
+                "newest_alert_magnitude": (10, 18.5)
+            },
+            save_properties = ["superphot_plus_classifier", "superphot_plus_sampler",],
+            post_filter_tags = ["superphot_plus_classified",],
+            post_filter_properties = {"superphot_plus_valid": (1,1), "superphot_plus_class_prob": (0.4, 1.0)},
+            groupby_properties={'superphot_plus_class': ('SN II', 'SLSN-I', 'SN IIn', 'SN Ibc')}
+        ),
+        RankingFilter(
             "superphot-plus",
             SuperphotPlusZTF(),
-            "#superphot-plus",
+            "#superphotplus",
             "superphot_plus_class_prob",
             pre_filter_properties = {
                 "oldest_alert_observation_time": (current_time-100., 99_999_999,),
@@ -36,22 +51,6 @@ def all_current_filters():
             pre_filter_tags = ["LAISS_RFC_AD_filter",],
             save_properties = ["shap_url"]
         ),
-        # superphot-plus filter
-        RankingFilter(
-            "superphot-plus-bright",
-            SuperphotPlusZTF(),
-            "#superphot-plus-bright-followup", # change
-            "superphot_plus_class_prob",
-            pre_filter_properties = {
-                "oldest_alert_observation_time": (current_time-30., 99_999_999,),
-                "num_mag_values": (3, 500),
-                "newest_alert_magnitude": (10, 18.0)
-            },
-            save_properties = ["superphot_plus_classifier", "superphot_plus_sampler",],
-            post_filter_tags = ["superphot_plus_classified",],
-            post_filter_properties = {"superphot_plus_valid": (1,1), "superphot_plus_class_prob": (0.4, 1.0)},
-            groupby_properties={'superphot_plus_class': ('SN II', 'SLSN-I', 'SN IIn', 'SN Ibc')}
-        ),
     ]
     return all_filters
 
@@ -59,7 +58,7 @@ def run():
     ranker = ANTARESRanker(1.0) # lookback of 1 day
 
     for filt in all_current_filters():
-        ranker.run(filt, 5) # max_num
+        ranker.run(filt, 10) # max_num
 
 if __name__ == '__main__':
     run()

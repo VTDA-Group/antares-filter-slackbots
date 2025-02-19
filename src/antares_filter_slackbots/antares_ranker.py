@@ -329,45 +329,53 @@ class ANTARESRanker:
         merged_hosts = None
         for attempt in range(5):
             print(f"Attempt {attempt+1} out of 5")
-            try:
-                hosts = getTransientHosts(
-                    transientName=df.index,
-                    transientCoord=generate_coordinates(df.ra, df.dec),
-                    verbose='True',
-                    starcut='gentle',
-                    savepath=os.getcwd()+"/",
-                    ascentMatch=False
-                )
-                if hosts.NED_redshift.isna().any():
-                    photo_z_hosts = calc_photoz(
-                        hosts.loc[hosts.NED_redshift.isna(), :],
-                        dust_path=dustmaps_config['data_dir'],
-                        model_path=os.path.join(
-                            Path(__file__).parent.parent.parent.absolute(),
-                            "data/MLP_lupton.hdf5"
-                        )
+            #try:
+            hosts = getTransientHosts(
+                transientName=df.index,
+                transientCoord=generate_coordinates(df.ra, df.dec),
+                verbose='True',
+                starcut='gentle',
+                savepath=os.getcwd()+"/",
+                GHOSTpath=self._ghost_path,
+                ascentMatch=False
+            )
+            if hosts.NED_redshift.isna().any():
+                temp = hosts.loc[hosts.NED_redshift.isna(), :]
+                photo_z_hosts = calc_photoz(
+                    temp,
+                    dust_path=dustmaps_config['data_dir'],
+                    model_path=os.path.join(
+                        Path(__file__).parent.parent.parent.absolute(),
+                        "data/MLP_lupton.hdf5"
                     )
-                    photo_z_hosts = photo_z_hosts.loc[:, ['TransientName', 'photo_z']]
-                    merged_hosts = pd.merge(hosts, photo_z_hosts, how='outer', on='TransientName')
-                else:
-                    print("all entries with NED redshifts")
+                )
+                if 'photo_z' not in photo_z_hosts.columns:
                     merged_hosts = hosts.copy()
                     merged_hosts["photo_z"] = np.nan
-                break
-            except:
-                pass
+                else:
+                    photo_z_hosts = photo_z_hosts.loc[:, ['TransientName', 'photo_z']]
+                    merged_hosts = pd.merge(hosts, photo_z_hosts, how='outer', on='TransientName')
+            else:
+                print("all entries with NED redshifts")
+                merged_hosts = hosts.copy()
+                merged_hosts["photo_z"] = np.nan
+            break
+            #except:
+            #    pass
 
         if merged_hosts is None:
             raise ConnectionError("Could not retrieve host info")
-        
-        # add to ghost table
-        fullTable = pd.read_csv(os.path.join(self._ghost_path,"database/GHOST.csv"))
-        fullTable = pd.concat([fullTable, merged_hosts], ignore_index=True).drop_duplicates(subset=['TransientName'])
-        fullTable.to_csv(os.path.join(self._ghost_path,"database/GHOST.csv"),index=False)
-
+            
         hosts_subdf = merged_hosts.loc[:,[
             'NED_name', 'dist', 'objName', 'NED_redshift', 'photo_z', 'TransientName'
         ]]
+            
+        # add to ghost table
+        fullTable = pd.read_csv(os.path.join(self._ghost_path,"database/GHOST.csv"))
+        orig_cols = np.intersect1d(fullTable.columns, merged_hosts.columns)
+        fullTable = pd.concat([fullTable, merged_hosts[orig_cols]], ignore_index=True).drop_duplicates(subset=['TransientName'])
+        fullTable.to_csv(os.path.join(self._ghost_path,"database/GHOST.csv"),index=False)
+
         df['index'] = df.index
         merged_df = pd.merge(df, hosts_subdf, how="left", left_index=True, right_on='TransientName')
         merged_df.set_index('index', inplace=True)
