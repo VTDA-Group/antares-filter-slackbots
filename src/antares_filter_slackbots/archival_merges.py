@@ -80,17 +80,38 @@ def add_redshift_info(df):
     merged_df.drop_duplicates(subset='TransientName', keep='last', inplace=True)
     return merged_df
 
-def merge_voting_histories(*dfs):
+def merge_voting_histories(current_df, archival_df, save_prefix):
     """Merge current and archival voting histories.
     """
-    Transient,Response,User,UserID,TimeStamp,AnomalyScore,HostSep,Redshift,RedshiftFlag
-
+    archival_df.rename(columns={'User': 'UserName'}, inplace=True)
+    archival_df.replace(
+        {
+            'Anomalous': 'anomalous',
+            'Not Anomalous': 'not_anomalous',
+            'Very Anomalous': 'very_anomalous',
+            'AGN': 'agn',
+            'Not an AGN': 'not_agn',
+        }, inplace=True
+    )
+    current_df.replace(
+        {
+            'upvote': 'anomalous',
+            'downvote': 'not_anomalous',
+            'strong_upvote': 'very_anomalous',
+            'AGN': 'agn',
+        }, inplace=True
+    )
+    merged_df = pd.concat([archival_df, current_df], join='outer')
+    reduced_df1 = merged_df[['Transient', 'UserID', 'UserName', 'Response', 'TimeStamp']]
+    reduced_df2 = merged_df[['Transient', 'UserID', 'UserName', 'Response']].drop_duplicates(subset=['Transient', 'UserName'], keep='last')
+    reduced_df1.to_csv(save_prefix + "_with_repeats.csv", index=False)
+    reduced_df2.to_csv(save_prefix + "_no_repeats.csv", index=False)
 
 
 if __name__ == '__main__':
     data_path = data_dir()
     ghost_path = os.path.join(data_path, "ghost")
-
+    """
     orig_df = pd.read_csv(os.path.join(ghost_path, "database", "GHOST.csv"))
     archival_df1 = pd.read_csv(os.path.join(ghost_path, "ghost_archival1.csv"))
     archival_df2 = pd.read_csv(os.path.join(ghost_path, "ghost_archival2.csv"))
@@ -100,3 +121,9 @@ if __name__ == '__main__':
     tns_df = convert_transients_to_tns(new_df)
     redshift_df = add_redshift_info(tns_df)
     redshift_df.to_csv(os.path.join(ghost_path, "all_new_hosts.csv"), index=False)
+    """
+    archival_votes = os.path.join(data_path, "archival", "slack_reactions.csv")
+    current_votes = os.path.join(data_path, "LAISS_anomalies", "voting_history.csv")
+    archival_df = pd.read_csv(archival_votes)
+    current_df = pd.read_csv(current_votes)
+    merge_voting_histories(current_df, archival_df, os.path.join(data_path, "LAISS_anomalies", "merged_votes"))

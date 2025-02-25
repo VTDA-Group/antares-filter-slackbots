@@ -6,7 +6,7 @@ import numpy as np
 from dustmaps.config import config as dustmaps_config
 import astropy.units as u
 from astropy.coordinates import SkyCoord
-from astro_ghost.ghostHelperFunctions import getTransientHosts, getGHOST
+from scipy.stats import uniform, gamma, halfnorm
 from astro_ghost.photoz_helper import calc_photoz
 import glob
 from datetime import datetime, timedelta
@@ -207,6 +207,13 @@ class ANTARESRanker:
         self._lookback = lookback_days
         self._query = []
 
+        # initialize prost distributions
+        self.priorfunc_offset = uniform(loc=0, scale=10)
+        self.likefunc_offset = gamma(a=0.75)
+        self.likefunc_absmag = SnRateAbsmag(a=-30, b=-10)
+        self.priorfunc_absmag = uniform(loc=-30, scale=20)
+        self.priorfunc_z = halfnorm(loc=0.0001, scale=0.5)
+
 
     def reset_query(self):
         """Reset query."""
@@ -330,14 +337,30 @@ class ANTARESRanker:
         for attempt in range(5):
             print(f"Attempt {attempt+1} out of 5")
             #try:
-            hosts = getTransientHosts(
-                transientName=df.index,
-                transientCoord=generate_coordinates(df.ra, df.dec),
-                verbose='True',
-                starcut='gentle',
-                savepath=os.getcwd()+"/",
-                GHOSTpath=self._ghost_path,
-                ascentMatch=False
+            # if we have redshift, use it
+            if 'redshift' in df.columns.values:
+                priors = {"offset": priorfunc_offset, "absmag": priorfunc_absmag, "redshift": priorfunc_z}
+                likes = {"offset": likefunc_offset, "absmag": likefunc_absmag}
+            else:
+                priors = {"offset": priorfunc_offset}
+                likes = {"offset": likefunc_offset}
+
+            df.reset_index(inplace=True)
+
+            df_prep = prepare_catalog(
+                df, transient_name_col="IAUID", transient_coord_cols=("RA", "Dec")
+            )
+
+            hosts = associate_sample(
+                df_prep,
+                priors=priors,
+                likes=likes,
+                catalogs=['glade', 'decals', 'panstarrs'],
+                parallel=True,
+                verbose=0,
+                save=False,
+                progress_bar=False,
+                cat_cols=True,
             )
             if hosts.NED_redshift.isna().any():
                 temp = hosts.loc[hosts.NED_redshift.isna(), :]
