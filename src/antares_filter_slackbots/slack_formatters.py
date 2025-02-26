@@ -30,7 +30,6 @@ def generate_context_block(df, obj_id):
         }
     
     sub_df = df.loc[df.index == obj_id]
-    print(sub_df)
 
     if len(sub_df) == 0:
         return {
