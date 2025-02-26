@@ -127,7 +127,6 @@ class SuperphotPlusZTF(dk.Filter):
             num_iter=10_000,
             random_state=self.random_seed
         )
-
         # loads trained model files (for actual filter)
         """
         full_model_fn = self.files['superphot_plus_lightgbm_12_2024_v3.pt'] 

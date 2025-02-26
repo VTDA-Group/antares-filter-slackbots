@@ -1,21 +1,20 @@
 import os
+from pathlib import Path
+import subprocess
+import glob
 from typing import Any, Optional
+from datetime import datetime, timedelta
 
-from astropy.time import Time
 import numpy as np
+import pandas as pd
+from scipy.stats import uniform, gamma, halfnorm
 from dustmaps.config import config as dustmaps_config
+from astropy.time import Time
 import astropy.units as u
 from astropy.coordinates import SkyCoord
-from scipy.stats import uniform, gamma, halfnorm
-from astro_ghost.photoz_helper import calc_photoz
-import glob
-from datetime import datetime, timedelta
-import subprocess
-from pathlib import Path
-
-
+from astro_prost.associate import associate_sample, prepare_catalog
+from astro_prost.helpers import SnRateAbsmag
 import antares_client
-import pandas as pd
 
 from .slack_formatters import SlackPoster
 from .slack_requests import *
@@ -199,20 +198,23 @@ class ANTARESRanker:
             Path(__file__).parent.parent.parent.absolute(),
             "data/dustmaps"
         )
-        self._ghost_path = os.path.join(
-            Path(__file__).parent.parent.parent.absolute(), "data/ghost"
+        self._prost_path = os.path.join(
+            Path(__file__).parent.parent.parent.absolute(), "PROST.csv"
         )
-        os.makedirs(self._ghost_path, exist_ok=True)
-        getGHOST(real=True, installpath=self._ghost_path)
         self._lookback = lookback_days
         self._query = []
 
         # initialize prost distributions
-        self.priorfunc_offset = uniform(loc=0, scale=10)
-        self.likefunc_offset = gamma(a=0.75)
-        self.likefunc_absmag = SnRateAbsmag(a=-30, b=-10)
-        self.priorfunc_absmag = uniform(loc=-30, scale=20)
-        self.priorfunc_z = halfnorm(loc=0.0001, scale=0.5)
+        priorfunc_offset = uniform(loc=0, scale=10)
+        likefunc_offset = gamma(a=0.75)
+        likefunc_absmag = SnRateAbsmag(a=-30, b=-10)
+        priorfunc_absmag = uniform(loc=-30, scale=20)
+        priorfunc_z = halfnorm(loc=0.0001, scale=0.5)
+
+        self.priors_z = {"offset": priorfunc_offset, "absmag": priorfunc_absmag, "redshift": priorfunc_z}
+        self.likes_z = {"offset": likefunc_offset, "absmag": likefunc_absmag}
+        self.priors_noz = {"offset": priorfunc_offset}
+        self.likes_noz = {"offset": likefunc_offset}
 
 
     def reset_query(self):
@@ -301,7 +303,7 @@ class ANTARESRanker:
                 tns_redshift = np.nan
 
             locus_dict = {
-                'antid': locus.locus_id,
+                'name': locus.locus_id,
                 'tns_name': tns_name,
                 'tns_class': tns_cls,
                 'tns_redshift': tns_redshift,
@@ -326,62 +328,50 @@ class ANTARESRanker:
             return None
 
         locus_df = pd.DataFrame.from_records(locus_dicts)
-        locus_df.set_index('antid', inplace=True)
         full_locus_df = self.add_host_galaxy_info(locus_df)
         return full_locus_df
+    
     
     def add_host_galaxy_info(self, df):
         """Retrieve host galaxy info for bunch of loci.
         """
         merged_hosts = None
+        
         for attempt in range(5):
             print(f"Attempt {attempt+1} out of 5")
             #try:
-            # if we have redshift, use it
-            if 'redshift' in df.columns.values:
-                priors = {"offset": priorfunc_offset, "absmag": priorfunc_absmag, "redshift": priorfunc_z}
-                likes = {"offset": likefunc_offset, "absmag": likefunc_absmag}
-            else:
-                priors = {"offset": priorfunc_offset}
-                likes = {"offset": likefunc_offset}
 
-            df.reset_index(inplace=True)
-
-            df_prep = prepare_catalog(
-                df, transient_name_col="IAUID", transient_coord_cols=("RA", "Dec")
+            noz_mask = df.tns_redshift.isna()
+            df_prep_z = prepare_catalog(
+                df[~noz_mask], transient_name_col="name", transient_coord_cols=("ra", "dec")
+            )
+            df_prep_noz = prepare_catalog(
+                df[noz_mask], transient_name_col="name", transient_coord_cols=("ra", "dec")
             )
 
-            hosts = associate_sample(
-                df_prep,
-                priors=priors,
-                likes=likes,
+            hosts_z = associate_sample(
+                df_prep_z,
+                priors=self.priors_z,
+                likes=self.likes_z,
                 catalogs=['glade', 'decals', 'panstarrs'],
-                parallel=True,
+                parallel=False,
                 verbose=0,
                 save=False,
                 progress_bar=False,
                 cat_cols=True,
             )
-            if hosts.NED_redshift.isna().any():
-                temp = hosts.loc[hosts.NED_redshift.isna(), :]
-                photo_z_hosts = calc_photoz(
-                    temp,
-                    dust_path=dustmaps_config['data_dir'],
-                    model_path=os.path.join(
-                        Path(__file__).parent.parent.parent.absolute(),
-                        "data/MLP_lupton.hdf5"
-                    )
-                )
-                if 'photo_z' not in photo_z_hosts.columns:
-                    merged_hosts = hosts.copy()
-                    merged_hosts["photo_z"] = np.nan
-                else:
-                    photo_z_hosts = photo_z_hosts.loc[:, ['TransientName', 'photo_z']]
-                    merged_hosts = pd.merge(hosts, photo_z_hosts, how='outer', on='TransientName')
-            else:
-                print("all entries with NED redshifts")
-                merged_hosts = hosts.copy()
-                merged_hosts["photo_z"] = np.nan
+            hosts_noz = associate_sample(
+                df_prep_noz,
+                priors=self.priors_z,
+                likes=self.likes_z,
+                catalogs=['glade', 'decals', 'panstarrs'],
+                parallel=False,
+                verbose=0,
+                save=False,
+                progress_bar=False,
+                cat_cols=True,
+            )
+            merged_hosts = pd.concat([hosts_z, hosts_noz], ignore_index=True)
             break
             #except:
             #    pass
@@ -389,43 +379,35 @@ class ANTARESRanker:
         if merged_hosts is None:
             raise ConnectionError("Could not retrieve host info")
             
-        hosts_subdf = merged_hosts.loc[:,[
-            'NED_name', 'dist', 'objName', 'NED_redshift', 'photo_z', 'TransientName'
-        ]]
-            
         # add to ghost table
-        fullTable = pd.read_csv(os.path.join(self._ghost_path,"database/GHOST.csv"))
-        orig_cols = np.intersect1d(fullTable.columns, merged_hosts.columns)
-        fullTable = pd.concat([fullTable, merged_hosts[orig_cols]], ignore_index=True).drop_duplicates(subset=['TransientName'])
-        fullTable.to_csv(os.path.join(self._ghost_path,"database/GHOST.csv"),index=False)
+        if os.path.exists(self._prost_path):
+            full_table = pd.read_csv(self._prost_path)
+            orig_cols = np.intersect1d(full_table.columns, merged_hosts.columns)
+            full_table = pd.concat([full_table, merged_hosts[orig_cols]], ignore_index=True).drop_duplicates(subset=['name'])
+            full_table.to_csv(self._prost_path, index=False)
+        else:
+            merged_hosts.to_csv(self._prost_path, index=False)
 
-        df['index'] = df.index
-        merged_df = pd.merge(df, hosts_subdf, how="left", left_index=True, right_on='TransientName')
-        merged_df.set_index('index', inplace=True)
+        merged_df = merged_hosts.loc[:, [*df.columns,
+            'objName', 'host_redshift_mean', 'host_offset_mean',
+            'host_absmag_mean', 'host_total_posterior', 'best_cat'
+        ]]
+        merged_df['host_redshift_type'] = 'PHOT'
+
+        merged_df.rename(columns={
+            'objName': 'host_name',
+            'host_redshift_mean': 'host_redshift',
+            'host_total_posterior': 'host_prob',
+            'host_offset_mean': 'host_sep_arcsec',
+            'best_cat': 'best_host_catalog',
+            'host_absmag_mean': 'host_absmag'
+        }, inplace=True)
+
+        merged_df.set_index('name', inplace=True)
         merged_df.index.name = 'antid'
-        merged_df['host_name'] = merged_df.NED_name
-        merged_df.loc[:,"host_name"].mask(merged_df.host_name.isna(), merged_df.objName, inplace=True)
-        merged_df['host_redshift'] = merged_df.NED_redshift
-        merged_df['host_redshift_type'] = 'SPEC'
-        merged_df['host_redshift_type'].mask(merged_df.NED_redshift.isna(), "PHOT", inplace=True)
-        merged_df['host_redshift'].mask(merged_df.NED_redshift.isna(), merged_df.photo_z, inplace=True)
-        merged_df.rename(columns={'dist': 'host_sep_arcsec'}, inplace=True)
-        merged_df.drop(["NED_name", "NED_redshift" ,"objName", "TransientName", "photo_z"], axis=1, inplace=True)
-
-        # ghost cleanup
-        save_path = os.path.join(os.getcwd(), "transients_*")
-        files_and_directories = glob.glob(save_path)
-
-        if files_and_directories:
-            result = subprocess.run(['rm', '-r'] + files_and_directories, capture_output=True, text=True)
-
-            # Check if the command was successful
-            if result.returncode == 0:
-                print(f"GHOST directories at {files_and_directories} removed successfully")
-            else:
-                print("Error removing directories:", result.stderr)
 
         return merged_df
+    
 
     def rank(self, df, filt, max_num=10):
         """
