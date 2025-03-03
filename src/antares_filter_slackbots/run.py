@@ -12,47 +12,57 @@ def all_current_filters():
             "superphot-plus-bright",
             SuperphotPlusZTF(),
             "#superphot-plus-bright-followup", # change
-            "superphot_plus_class_prob",
+            "superphot_plus_prob",
             pre_filter_properties = {
                 "oldest_alert_observation_time": (current_time-20., 99_999_999,),
-                "num_mag_values": (3, 50),
+                "num_mag_values": (4, 50),
                 "newest_alert_magnitude": (10, 18.5)
             },
-            save_properties = ["superphot_plus_classifier", "superphot_plus_sampler",],
+            save_properties = [
+                "superphot_plus_class_without_redshift", "superphot_plus_prob_without_redshift",    
+                "superphot_plus_classifier", "superphot_plus_sampler",
+            ],
             post_filter_tags = ["superphot_plus_classified",],
-            post_filter_properties = {"superphot_plus_valid": (1,1), "superphot_plus_class_prob": (0.4, 1.0)},
+            post_filter_properties = {"superphot_plus_valid": (1,1), "superphot_plus_prob": (0.4, 1.0)},
             groupby_properties={'superphot_plus_class': ('SN II', 'SLSN-I', 'SN IIn', 'SN Ibc')}
         ),
         RankingFilter(
             "superphot-plus",
             SuperphotPlusZTF(),
             "#superphotplus",
-            "superphot_plus_class_prob",
+            "superphot_plus_prob",
             pre_filter_properties = {
                 "oldest_alert_observation_time": (current_time-100., 99_999_999,),
-                "num_mag_values": (3, 500),
+                "num_mag_values": (4, 500),
             },
-            save_properties = ["superphot_plus_classifier", "superphot_plus_sampler",],
+            save_properties = [
+                "superphot_plus_class_without_redshift", "superphot_plus_prob_without_redshift",    
+                "superphot_plus_classifier", "superphot_plus_sampler",
+            ],
             post_filter_tags = ["superphot_plus_classified",],
-            post_filter_properties = {"superphot_plus_valid": (1,1), "superphot_plus_class_prob": (0.4, 1.0)},
+            post_filter_properties = {"superphot_plus_valid": (1,1), "superphot_plus_prob": (0.4, 1.0)},
             groupby_properties={'superphot_plus_class': ('SN IIn', 'SN Ibc')}
         ),
         # anomaly detection filter: currently just uses ANTARES version of filter
-        RankingFilter(
-            "LAISS_anomalies",
-            ShapleyPlotLAISS(),
-            "#anomaly-detection",
-            "LAISS_RFC_anomaly_score",
-            pre_filter_properties = {
-                "oldest_alert_observation_time": (current_time-1000., 99_999_999,),
-                "num_mag_values": (3, 500),
-                "LAISS_RFC_anomaly_score": (30., 100.),
-            },
-            pre_filter_tags = ["LAISS_RFC_AD_filter",],
-            save_properties = ["shap_url"]
-        ),
     ]
+    """
+    RankingFilter(
+        "LAISS_anomalies",
+        ShapleyPlotLAISS(),
+        "#anomaly-detection",
+        "LAISS_RFC_anomaly_score",
+        pre_filter_properties = {
+            "oldest_alert_observation_time": (current_time-1000., 99_999_999,),
+            "num_mag_values": (3, 500),
+            "LAISS_RFC_anomaly_score": (30., 100.),
+        },
+        pre_filter_tags = ["LAISS_RFC_AD_filter",],
+        save_properties = ["shap_url"]
+    ),
+    """
+        
     return all_filters
+
 
 def run():
     ranker = ANTARESRanker(1.0) # lookback of 1 day
