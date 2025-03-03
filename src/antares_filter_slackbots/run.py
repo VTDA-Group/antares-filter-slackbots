@@ -11,7 +11,7 @@ def all_current_filters():
         RankingFilter(
             "superphot-plus-bright",
             SuperphotPlusZTF(),
-            "#slackbot-test", #"#superphot-plus-bright-followup", # change
+            "#superphot-plus-bright-followup", # change
             "superphot_plus_prob",
             pre_filter_properties = {
                 "oldest_alert_observation_time": (current_time-20., 99_999_999,),
@@ -29,7 +29,7 @@ def all_current_filters():
         RankingFilter(
             "superphot-plus",
             SuperphotPlusZTF(),
-            "#slackbot-test", #"#superphotplus",
+            "#superphotplus",
             "superphot_plus_prob",
             pre_filter_properties = {
                 "oldest_alert_observation_time": (current_time-100., 99_999_999,),
