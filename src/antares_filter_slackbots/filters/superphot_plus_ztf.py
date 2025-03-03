@@ -5,12 +5,14 @@ from astropy.coordinates import SkyCoord
 import astropy.units as u
 import numpy as np
 from pathlib import Path
+from astropy.cosmology import Planck15  # pylint: disable=no-name-in-module
 
 from superphot_plus.samplers.dynesty_sampler import DynestySampler
 from superphot_plus.samplers.numpyro_sampler import SVISampler
-from superphot_plus.priors import generate_priors
+from superphot_plus.priors import SuperphotPrior
 from superphot_plus.model import SuperphotLightGBM
 from snapi import Photometry
+
 
 class SuperphotPlusZTF(dk.Filter):
     NAME = "Superphot+ Supernovae Classification for ZTF"
@@ -26,7 +28,12 @@ class SuperphotPlusZTF(dk.Filter):
         'ant_magerr',
     ]
     
-    PARAM_NAMES = generate_priors(["ZTF_r", "ZTF_g"]).dataframe['param']
+    PARAM_NAMES = SuperphotPrior.load(
+        os.path.join(
+            Path(__file__).parent.parent.parent.parent.absolute(),
+            "data/superphot-plus/global_priors_hier_svi"
+        )
+    ).dataframe['param']
 
     OUTPUT_LOCUS_PROPERTIES = [
         {
@@ -75,8 +82,10 @@ class SuperphotPlusZTF(dk.Filter):
     ]
     
     REQUIRES_FILES = [
-        'superphot_plus_lightgbm_12_2024_v3.pt',
-        'superphot_plus_early_lightgbm_12_2024_v3.pt'
+        'superphot_plus_lightgbm_02_2025_v4.pt',
+        'superphot_plus_early_lightgbm_02_2025_v4.pt'
+        'superphot_plus_lightgbm_02_2025_v4.pt',
+        'superphot_plus_early_lightgbm_02_2025_v4.pt'
     ]
         
     def setup(self):
@@ -84,12 +93,16 @@ class SuperphotPlusZTF(dk.Filter):
         ANTARES will call this function once at the beginning of each night
         when filters are loaded.
         """
+        self.data_dir = os.path.join(
+            Path(__file__).parent.parent.parent.parent.absolute(),
+            "data"
+        )
+        
         # Loads SFDQuery object once to lower overhead
         from dustmaps.config import config
         config.reset()
         config['data_dir'] = os.path.join(
-            Path(__file__).parent.parent.parent.parent.absolute(),
-            "data/dustmaps"
+            self.data_dir, "dustmaps"
         )
         import dustmaps.sfd
         dustmaps.sfd.fetch()
@@ -109,7 +122,9 @@ class SuperphotPlusZTF(dk.Filter):
         ]
         
         # generate sampling priors
-        self.priors = generate_priors(["ZTF_r", "ZTF_g"])
+        self.priors = SuperphotPrior.load(
+            os.path.join(self.data_dir, 'superphot-plus/global_priors_hier_svi')
+        )
         self.random_seed = 42
 
         # initialize dynesty sampler object
@@ -134,21 +149,43 @@ class SuperphotPlusZTF(dk.Filter):
         """
         # replacement for local filter call
         full_model_fn = os.path.join(
-            Path(__file__).parent.parent.parent.parent.absolute(),
-            "data/superphot-plus/model_superphot_full.pt"
+            self.data_dir,
+            "superphot-plus/model_superphot_full.pt"
         )
         early_model_fn = os.path.join(
-            Path(__file__).parent.parent.parent.parent.absolute(),
-            "data/superphot-plus/model_superphot_early.pt"
+            self.data_dir,
+            "superphot-plus/model_superphot_early.pt"
         )
         self.full_model = SuperphotLightGBM.load(full_model_fn)
         self.early_model = SuperphotLightGBM.load(early_model_fn)
+        
+        # redshift-inclusive models
+        full_model_fn = os.path.join(
+            self.data_dir,
+            "superphot-plus/model_superphot_redshift.pt"
+        )
+        early_model_fn = os.path.join(
+            self.data_dir,
+            "superphot-plus/model_superphot_early_redshift.pt"
+        )
+        self.full_model_z = SuperphotLightGBM.load(full_model_fn)
+        self.early_model_z = SuperphotLightGBM.load(early_model_fn)
 
-        # subset of features for early-phase classifier
-        self.early_input_features = self.PARAM_NAMES[~self.PARAM_NAMES.isin([
-            "gamma_ZTF_r", "gamma_ZTF_g", "tau_fall_ZTF_r", "tau_fall_ZTF_g"
+
+        # subset of features for each classifier
+        self.full_input_features = self.PARAM_NAMES[~self.PARAM_NAMES.isin([
+            "A_ZTF_r", "t_0_ZTF_r",
         ])]
-
+        self.early_input_features = self.PARAM_NAMES[~self.PARAM_NAMES.isin([
+            "A_ZTF_r", "t_0_ZTF_r", "gamma_ZTF_r", "gamma_ZTF_g", "tau_fall_ZTF_r", "tau_fall_ZTF_g"
+        ])]
+        self.early_redshift_input_features = self.PARAM_NAMES[~self.PARAM_NAMES.isin([
+            "t_0_ZTF_r", "gamma_ZTF_r", "gamma_ZTF_g", "tau_fall_ZTF_r", "tau_fall_ZTF_g"
+        ])]
+        self.full_redshift_input_features = self.PARAM_NAMES[~self.PARAM_NAMES.isin([
+            "t_0_ZTF_r",
+        ])]
+        
         self.score_cutoff = 1.2 # fits with reduced chisq above this are ignored
         self._allowed_types = ['SLSN-I', 'SN Ia', 'SN Ibc', 'SN II', 'SN IIn']
 
@@ -156,6 +193,9 @@ class SuperphotPlusZTF(dk.Filter):
     def quality_check(self, ts):
         """Return True if all quality checks are passed, else False."""
         if len(ts['ant_passband'].unique()) < 2: # at least 1 point in each band
+            return False
+        
+        if np.ptp(ts['ant_mjd']) < 4.: # at least 4 days of data
             return False
         
         # ignore any events lasting longer than 200 days
@@ -183,6 +223,7 @@ class SuperphotPlusZTF(dk.Filter):
 
         return True
 
+    
     def run(self, locus):
         """
         Runs a filter that fits all transients tagged with supernovae-like properties to the model
@@ -248,10 +289,33 @@ class SuperphotPlusZTF(dk.Filter):
             'ZTF_r', 'ZTF_g'
         )
         ts['zeropoint'] = 23.90 # AB mag
-
+        
+        # extract redshift
+        tns_redshift = locus.extra_properties['tns_redshift']
+        if ~np.isnan(tns_redshift) and (tns_redshift > 0.):
+            redshift = tns_redshift
+        elif locus.extra_properties['high_host_confidence'] and (
+            ~np.isnan(locus.extra_properties['host_redshift'])
+        ) and (locus.extra_properties['host_redshift'] > 0.):
+            redshift = locus.extra_properties['host_redshift']
+        else:
+            redshift = np.nan
+    
         # phases, normalizes, and extinction-corrects photometry
         phot = Photometry(ts) # SNAPI photometry object
+        
+        new_lcs = []
+        for lc in phot.light_curves:
+            lc.merge_close_times(inplace=True)
+            new_lcs.append(lc)
+        
+        phot = Photometry.from_light_curves(new_lcs)
         phot.phase(inplace=True)
+        
+        # adjust for time dilation
+        if ~np.isnan(redshift):
+            phot.times /= (1. + redshift)
+            
         phot.truncate(min_t=-50., max_t=100.)
 
         if len(phot) < 2: # removed a filter
@@ -322,19 +386,49 @@ class SuperphotPlusZTF(dk.Filter):
 
         # fix index for groupby() operations within model.evaluate()
         uncorr_fits.index = [locus.locus_id,] * len(uncorr_fits)
+        
+        if ~np.isnan(redshift):
+            # add magnitude to uncorr_fits
+            app_mag = locus.properties['brightest_alert_magnitude']
+            k_corr = 2.5 * np.log10(1.0 + redshift)
+            distmod = Planck15.distmod(redshift).value
+            abs_mag = app_mag - distmod + k_corr
+            uncorr_fits['peak_abs_mag'] = abs_mag
+            locus.properties['peak_abs_mag'] = abs_mag
+            
+            if len(valid_fits[early_fit_mask]) > len(valid_fits[~early_fit_mask]):
+                probs_avg_z = self.early_model_z.evaluate(
+                    uncorr_fits[self.early_redshift_input_features]
+                )
+            else:
+                probs_avg_z = self.full_model_z.evaluate(
+                    uncorr_fits[self.full_redshift_input_features]
+                )
+            probs_avg_z.columns = np.sort(self._allowed_types)
+            locus.properties['superphot_plus_class'] = probs_avg_z.idxmax(axis=1).iloc[0]
+            locus.properties['superphot_plus_prob'] = np.round(probs_avg_z.max(axis=1).iloc[0], 3)
 
+        
         if len(valid_fits[early_fit_mask]) > len(valid_fits[~early_fit_mask]):
             # use early-phase classifier
             probs_avg = self.early_model.evaluate(uncorr_fits[self.early_input_features])
-            locus.properties['superphot_plus_classifier'] = 'early_lightgbm_12_2024'
+            locus.properties['superphot_plus_classifier'] = 'early_lightgbm_02_2025'
         else:
             # use full-phase classifier
-            probs_avg = self.full_model.evaluate(uncorr_fits)
-            locus.properties['superphot_plus_classifier'] = 'full_lightgbm_12_2024'
+            probs_avg = self.full_model.evaluate(uncorr_fits[self.full_input_features])
+            locus.properties['superphot_plus_classifier'] = 'full_lightgbm_02_2025'
             
-        probs_avg.columns = np.sort(self._allowed_types)
-
+            
         # set predicted SN class and output probability of that classification
-        locus.properties['superphot_plus_class'] = probs_avg.idxmax(axis=1).iloc[0]
-        locus.properties['superphot_plus_class_prob'] = np.round(probs_avg.max(axis=1).iloc[0], 3)
+        probs_avg.columns = np.sort(self._allowed_types)
+        sp_class = probs_avg.idxmax(axis=1).iloc[0]
+        sp_prob = np.round(probs_avg.max(axis=1).iloc[0], 3)
+        
+        if ~np.isnan(redshift):
+            locus.properties['superphot_plus_class_without_redshift'] = sp_class
+            locus.properties['superphot_plus_prob_without_redshift'] = sp_prob
+        else:
+            locus.properties['superphot_plus_class'] = sp_class
+            locus.properties['superphot_plus_prob'] = sp_prob
+            
         locus.tags.append('superphot_plus_classified')

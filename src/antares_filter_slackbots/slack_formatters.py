@@ -84,6 +84,7 @@ def generate_context_block(df, obj_id):
         "block_id": f"votes_{obj_id}"
     }
 
+
 class SlackPoster:
     def __init__(self, loci_df, filt_meta, save_prefix):
         '''
@@ -113,7 +114,9 @@ class SlackPoster:
         """Round numerics to sig significant figures.
         """
         if isinstance(x, (int, float, np.number)):  # Check for numeric types
-            if (x == 0):  # Handle zero separately to avoid log10 issues
+            if isinstance(x, bool):
+                return x
+            elif (x == 0):  # Handle zero separately to avoid log10 issues
                 return x
             elif np.isnan(x):
                 return '---'
@@ -191,6 +194,10 @@ class SlackPoster:
     
     def generate_single_row_attachment(self, row):
         """Generate attachment for single row/locus."""
+        sub_df = self._vote_df.loc[self._vote_df.index == row.name]
+        
+        if len(sub_df.loc[sub_df.Response == 'downvote']) > 1:
+            return []
 
         title = f':collision: {row.name} :collision:'
         title_link = self._antares_url_base + row.name
@@ -230,7 +237,7 @@ class SlackPoster:
             fields['fields'] = [
                 {"type": "mrkdwn", "text": f"*TNS Name*: <{tns_url}|{row.tns_name}>"},
                 {"type": "mrkdwn", "text": f"*TNS Spec. Class*: {row.tns_class}"},
-                {"type": "mrkdwn", "text": f"*TNS Redshift*: {row.tns_redshift}"},
+                {"type": "mrkdwn", "text": f"*TNS Redshift*: {self.round_sigfigs(row.tns_redshift)}"},
             ]
 
         fields['fields'].append(
@@ -263,6 +270,10 @@ class SlackPoster:
                 'posted_before'
             ):
                 continue
+                
+            if self.round_sigfigs(row[p]) == '---':
+                continue
+                
             if "host" in p:
                 fields_host['fields'].append(
                     {"type": "mrkdwn", "text": f"*{self.unsnake(p)}*: {self.round_sigfigs(row[p])}"},
@@ -272,9 +283,9 @@ class SlackPoster:
                     {"type": "mrkdwn", "text": f"*{self.unsnake(p)}*: {self.round_sigfigs(row[p])}"},
                 )
 
-        attachment.append(fields_filter)
         attachment.append(fields_host)
-
+        attachment.append(fields_filter)
+        
         attachment.append(self.voting_action(row.name))
 
         attachment.append(generate_context_block(self._vote_df, row.name)) # this is where the votes are gonna be printed
@@ -411,6 +422,7 @@ class SlackVoteHandler:
         action_value = action['value']
         antid = action['action_id'].split("$")[-1]
         filter_name = action['action_id'].split("$")[-2]
+        timestamp = body['message']['ts']
 
         vote_df, _ = self.load_votes_df(filter_name)
 
@@ -425,7 +437,7 @@ class SlackVoteHandler:
                     text="Voted previously; vote has been updated."
                 )
         
-        self.record_vote(action_value, antid, user_id, user_name, filter_name)
+        self.record_vote(action_value, antid, user_id, user_name, filter_name, timestamp)
         self.update_slack_message(body, client, filter_name)
 
 
@@ -453,28 +465,26 @@ class SlackVoteHandler:
             text="Fallback text"
         )
 
-    def record_vote(self, vote, obj_id, user_id, user_name, filter_name):
+    def record_vote(self, vote, obj_id, user_id, user_name, filter_name, timestamp):
         """Adds vote to dataframe with previous
         votes to avoid repeats.
         """
         vote_df, vote_fn = self.load_votes_df(filter_name)
         if vote_df is None:
             vote_df = pd.DataFrame(
-                {'UserID': user_id, 'UserName': user_name, 'Response': vote},
+                {'UserID': user_id, 'UserName': user_name, 'Response': vote, 'Timestamp': timestamp},
                 index=[obj_id,]
             )
             vote_df.index.name = 'Transient'
 
-        mask = (vote_df.index == obj_id) & (vote_df.UserID == user_id)
+        mask = (vote_df.index == obj_id) & (vote_df.UserID == user_id) & (vote_df.Response == vote)
 
         if len(vote_df.loc[mask]) > 0:
-            vote_df.loc[mask, 'UserID'] = user_id
-            vote_df.loc[mask, 'UserName'] = user_name
-            vote_df.loc[obj_id, 'Response'] = vote
+            vote_df.loc[mask, 'Timestamp'] = timestamp
 
         else:
             new_df = pd.DataFrame(
-                {'UserID': user_id, 'UserName': user_name, 'Response': vote},
+                {'UserID': user_id, 'UserName': user_name, 'Response': vote, 'Timestamp': timestamp},
                 index=[obj_id,]
             )
             new_df.index.name = 'Transient'
@@ -482,6 +492,7 @@ class SlackVoteHandler:
 
         vote_df.to_csv(vote_fn)
 
+        
     def slack_events(self):
         return self.handler.handle(request)
 

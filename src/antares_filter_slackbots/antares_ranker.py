@@ -166,6 +166,7 @@ class RankingFilter:
             
         for (k,v) in self._post_filt_props.items():
             if (locus.properties[k] < v[0]) or (locus.properties[k] > v[1]):
+                print(k, locus.properties[k])
                 return False
                         
         for (k,v) in self._group_props.items():
@@ -199,7 +200,7 @@ class ANTARESRanker:
             "data/dustmaps"
         )
         self._prost_path = os.path.join(
-            Path(__file__).parent.parent.parent.absolute(), "PROST.csv"
+            Path(__file__).parent.parent.parent.absolute(), "data/PROST.csv"
         )
         self._lookback = lookback_days
         self._query = []
@@ -209,7 +210,7 @@ class ANTARESRanker:
         likefunc_offset = gamma(a=0.75)
         likefunc_absmag = SnRateAbsmag(a=-30, b=-10)
         priorfunc_absmag = uniform(loc=-30, scale=20)
-        priorfunc_z = halfnorm(loc=0.0001, scale=0.5)
+        priorfunc_z = halfnorm(loc=0.0001, scale=0.1)
 
         self.priors_z = {"offset": priorfunc_offset, "absmag": priorfunc_absmag, "redshift": priorfunc_z}
         self.likes_z = {"offset": likefunc_offset, "absmag": likefunc_absmag}
@@ -282,14 +283,15 @@ class ANTARESRanker:
     def process_query_results(self, loci, filt: RankingFilter):
         """Validate post-query loci and save as dataframe.
         """
-        locus_dicts = []
+        processed_loci = []
+        names = []
+        ras = []
+        decs = []
+        redshifts = []
         for i, locus in enumerate(loci):
             if i % 100 == 0:
-                print(f"Processed {i} loci...")
+                print(f"Pre-processed {i} loci...")
             if not self.star_catalog_check(locus):
-                continue
-            filt.apply(locus)
-            if not filt.validate_result(locus):
                 continue
 
             if 'tns_public_objects' in locus.catalog_objects:
@@ -297,38 +299,75 @@ class ANTARESRanker:
                 tns_name, tns_cls, tns_redshift = tns['name'], tns['type'], tns['redshift']
                 if tns_cls == '':
                     tns_cls = '---'
+                if tns_redshift is None:
+                    tns_redshift = np.nan
             else:
                 tns_name = '---'
                 tns_cls = '---'
                 tns_redshift = np.nan
-
-            locus_dict = {
-                'name': locus.locus_id,
+                
+            locus.extra_properties = {
                 'tns_name': tns_name,
                 'tns_class': tns_cls,
-                'tns_redshift': tns_redshift,
-                filt.ranked_property: locus.properties[filt.ranked_property],
-                'ra': locus.ra,
-                'dec': locus.dec,
-                'peak_mag': locus.properties['brightest_alert_magnitude'],
                 'peak_phase': self._mjd - locus.properties['brightest_alert_observation_time'],
             }
+            processed_loci.append(locus)
+            
+            ras.append(locus.ra)
+            decs.append(locus.dec)
+            names.append(locus.locus_id)
+            redshifts.append(tns_redshift)
+            
+            
+        locus_df = pd.DataFrame({
+            'name': names,
+            'ra': ras,
+            'dec': decs,
+            'tns_redshift': redshifts
+        })
+        host_df = self.add_host_galaxy_info(locus_df)
+
+        locus_dicts = []
+        for i, locus in enumerate(processed_loci):
+            if i % 100 == 0:
+                print(f"Processed {i} loci...")
+                
+            locus_host_info = host_df.loc[
+                host_df.index == locus.locus_id
+            ].iloc[0].to_dict()
+            locus.extra_properties.update(locus_host_info)
+            
+            filt.apply(locus)
+            
+            if not filt.validate_result(locus):
+                continue
+                
+            locus_dict = {
+                'name': locus.locus_id,
+                filt.ranked_property: locus.properties[filt.ranked_property],
+                'peak_mag': locus.properties['brightest_alert_magnitude'],
+                'peak_abs_mag': locus.properties['peak_abs_mag'],
+            }
+            
+            for p in filt._group_props:
+                if p in locus.properties:
+                    locus_dict[p] = locus.properties[p]
 
             for p in filt.save_properties:
-                locus_dict[p] = locus.properties[p]
-
-            for p in filt._group_props:
-                locus_dict[p] = locus.properties[p]
+                if p in locus.properties:
+                    locus_dict[p] = locus.properties[p]
+                    
+            locus_dict.update(locus.extra_properties)
             
             print(locus_dict)
-
             locus_dicts.append(locus_dict)
+            
 
         if len(locus_dicts) == 0:
             return None
 
-        locus_df = pd.DataFrame.from_records(locus_dicts)
-        full_locus_df = self.add_host_galaxy_info(locus_df)
+        full_locus_df = pd.DataFrame.from_records(locus_dicts)
+        full_locus_df.set_index('name', inplace=True)
         return full_locus_df
     
     
@@ -339,47 +378,82 @@ class ANTARESRanker:
         
         for attempt in range(5):
             print(f"Attempt {attempt+1} out of 5")
-            #try:
+            try:
 
-            noz_mask = df.tns_redshift.isna()
-            df_prep_z = prepare_catalog(
-                df[~noz_mask], transient_name_col="name", transient_coord_cols=("ra", "dec")
-            )
-            df_prep_noz = prepare_catalog(
-                df[noz_mask], transient_name_col="name", transient_coord_cols=("ra", "dec")
-            )
+                noz_mask = df.tns_redshift.isna()
 
-            hosts_z = associate_sample(
-                df_prep_z,
-                priors=self.priors_z,
-                likes=self.likes_z,
-                catalogs=['glade', 'decals', 'panstarrs'],
-                parallel=False,
-                verbose=0,
-                save=False,
-                progress_bar=False,
-                cat_cols=True,
-            )
-            hosts_noz = associate_sample(
-                df_prep_noz,
-                priors=self.priors_z,
-                likes=self.likes_z,
-                catalogs=['glade', 'decals', 'panstarrs'],
-                parallel=False,
-                verbose=0,
-                save=False,
-                progress_bar=False,
-                cat_cols=True,
-            )
-            merged_hosts = pd.concat([hosts_z, hosts_noz], ignore_index=True)
-            break
-            #except:
-            #    pass
+                if len(df[noz_mask]) == 0: # all redshift associated
+                    df_prep = prepare_catalog(
+                        df, transient_name_col="name", transient_coord_cols=("ra", "dec")
+                    )
+                    merged_hosts = associate_sample(
+                        df_prep,
+                        priors=self.priors_z,
+                        likes=self.likes_z,
+                        catalogs=['glade', 'decals', 'panstarrs'],
+                        parallel=False,
+                        verbose=0,
+                        save=False,
+                        progress_bar=False,
+                        cat_cols=True,
+                    )
+
+                elif len(df[~noz_mask]) == 0: # no redshifts
+                    df_prep = prepare_catalog(
+                        df, transient_name_col="name", transient_coord_cols=("ra", "dec")
+                    )
+                    merged_hosts = associate_sample(
+                        df_prep,
+                        priors=self.priors_noz,
+                        likes=self.likes_noz,
+                        catalogs=['glade', 'decals', 'panstarrs'],
+                        parallel=False,
+                        verbose=0,
+                        save=False,
+                        progress_bar=False,
+                        cat_cols=True,
+                    )
+
+                else:
+                    df_prep_z = prepare_catalog(
+                        df[~noz_mask], transient_name_col="name", transient_coord_cols=("ra", "dec")
+                    )
+                    df_prep_noz = prepare_catalog(
+                        df[noz_mask], transient_name_col="name", transient_coord_cols=("ra", "dec")
+                    )
+
+                    hosts_z = associate_sample(
+                        df_prep_z,
+                        priors=self.priors_z,
+                        likes=self.likes_z,
+                        catalogs=['glade', 'decals', 'panstarrs'],
+                        parallel=False,
+                        verbose=0,
+                        save=False,
+                        progress_bar=False,
+                        cat_cols=True,
+                    )
+                    hosts_noz = associate_sample(
+                        df_prep_noz,
+                        priors=self.priors_z,
+                        likes=self.likes_z,
+                        catalogs=['glade', 'decals', 'panstarrs'],
+                        parallel=False,
+                        verbose=0,
+                        save=False,
+                        progress_bar=False,
+                        cat_cols=True,
+                    )
+                    merged_hosts = pd.concat([hosts_z, hosts_noz], ignore_index=True)
+
+                break
+            except:
+                pass
 
         if merged_hosts is None:
             raise ConnectionError("Could not retrieve host info")
             
-        # add to ghost table
+        # add to existing prost table
         if os.path.exists(self._prost_path):
             full_table = pd.read_csv(self._prost_path)
             orig_cols = np.intersect1d(full_table.columns, merged_hosts.columns)
@@ -387,22 +461,28 @@ class ANTARESRanker:
             full_table.to_csv(self._prost_path, index=False)
         else:
             merged_hosts.to_csv(self._prost_path, index=False)
-
+            
+        merged_hosts.host_name.mask(merged_hosts.host_name.isna(), merged_hosts.host_objID, inplace=True)
+        merged_hosts.host_name.mask(merged_hosts.host_name.eq(""), merged_hosts.host_objID, inplace=True)
+        merged_hosts.host_name.mask(merged_hosts.host_name.eq("nan"), merged_hosts.host_objID, inplace=True)
+        merged_hosts.host_name = merged_hosts.host_name.astype(str)
+        
+        merged_hosts['host_prob_ratio'] = merged_hosts.host_total_posterior / merged_hosts.host_2_total_posterior
+        merged_hosts['host_any_non_ratio'] = merged_hosts.any_posterior / merged_hosts.none_posterior
+        merged_hosts['high_host_confidence'] = ((merged_hosts.host_prob_ratio >= 10.) & (merged_hosts.host_any_non_ratio >= 10.)).astype(bool)
         merged_df = merged_hosts.loc[:, [*df.columns,
-            'objName', 'host_redshift_mean', 'host_offset_mean',
-            'host_absmag_mean', 'host_total_posterior', 'best_cat'
+            'host_name', 'best_cat', 'host_redshift_mean', 'host_offset_mean',
+            'host_absmag_mean', 'host_total_posterior', 'high_host_confidence'
         ]]
-        merged_df['host_redshift_type'] = 'PHOT'
 
         merged_df.rename(columns={
-            'objName': 'host_name',
             'host_redshift_mean': 'host_redshift',
             'host_total_posterior': 'host_prob',
             'host_offset_mean': 'host_sep_arcsec',
             'best_cat': 'best_host_catalog',
             'host_absmag_mean': 'host_absmag'
         }, inplace=True)
-
+                
         merged_df.set_index('name', inplace=True)
         merged_df.index.name = 'antid'
 
@@ -423,6 +503,7 @@ class ANTARESRanker:
         df_pruned.drop("eff_rank", axis=1, inplace=True)
 
         return df_pruned
+    
     
     def get_last_posted(self, channel, num_days=5):
         """Get all antares IDs already posted in channel in last num_days days."""
