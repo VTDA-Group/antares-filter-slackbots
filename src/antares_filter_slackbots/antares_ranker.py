@@ -318,6 +318,8 @@ class ANTARESRanker:
             names.append(locus.locus_id)
             redshifts.append(tns_redshift)
             
+        if len(names) == 0:
+            return None
             
         locus_df = pd.DataFrame({
             'name': names,
@@ -375,11 +377,11 @@ class ANTARESRanker:
         """Retrieve host galaxy info for bunch of loci.
         """
         merged_hosts = None
-        
+
         for attempt in range(5):
             print(f"Attempt {attempt+1} out of 5")
+            
             try:
-
                 noz_mask = df.tns_redshift.isna()
 
                 if len(df[noz_mask]) == 0: # all redshift associated
