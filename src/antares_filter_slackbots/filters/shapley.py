@@ -13,6 +13,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 from ..auth import toku
+from ..slack_requests import setup_client
 
 def dict_merge(dict_list):
     dict1 = dict_list[0]
@@ -76,8 +77,11 @@ class ShapleyPlotLAISS(dk.Filter):
 
         self.shapley_descriptions = dict_merge([lc_descripts_bands, host_descripts_bands, host_descripts_nonGeneric])
         self.shapley_features = self.shapley_descriptions.keys()
+        self.input_properties = list(self.shapley_features)
+        self.input_properties.extend(['name', 'LAISS_RFC_anomaly_score'])
 
         self.channel_id = "C078CJZE3K5"
+        self._client = setup_client()
 
         # import RF info
         with open(os.path.join(self.data_dir, 'ad_random_forest.pkl'), 'rb') as f:
@@ -89,7 +93,7 @@ class ShapleyPlotLAISS(dk.Filter):
         self.explainer = shap.TreeExplainer(clf, data=RFdata[self.shapley_features])
 
 
-    def run(self, locus):
+    def run(self, event_dict, ts):
         """
         Function applies to each locus.
         """
@@ -97,18 +101,18 @@ class ShapleyPlotLAISS(dk.Filter):
         shap_features = {}
         for feat in self.shapley_features:
             try:
-                shap_features[feat] = locus.properties[feat]
+                shap_features[feat] = event_dict[feat]
             except:
                 shap_features[feat] = np.nan
 
-        plotpath = self.plot_shap(locus.locus_id, shap_features)
+        plotpath, length = self.plot_shap(event_dict['name'], shap_features)
         filename = plotpath.split("/")[-1]
-        response = self.upload_file(toku, locus.locus_id, plotpath)
-        file_id = response['file']['id']
+        file_id = self.upload_file(toku, event_dict['name'], plotpath, length)
         self.make_file_public(toku, file_id)
         initial_url = self.share_public_link(toku, file_id)
         final_url = self.format_url(initial_url, filename)
-        locus.properties["shap_url"] = final_url
+        event_dict["shap_url"] = final_url
+        return event_dict
         
     def plot_shap(self, antares_id, shap_features):
         """Generate Shapley force plot from object ID and
@@ -134,24 +138,32 @@ class ShapleyPlotLAISS(dk.Filter):
             edgecolor=fig.get_edgecolor()
         );
         print(f"File successfully saved at {filepath}.")
-        return filepath
+        length = os.path.getsize(filepath)
+        return filepath, length
 
-    def upload_file(self, token, antares_id, file_path):
+    def upload_file(self, token, antares_id, file_path, length):
         """Upload file to Slack.
         """
-        url = "https://slack.com/api/files.upload"
-        headers = {
-            "Authorization": f"Bearer {token}"
-        }
-        files = {
-            'file': open(file_path, 'rb')
-        }
-        data = {
-            "channels": self.channel_id,
-            "initial_comment": f"Here is the SHAP plot for {antares_id}",
-        }
-        response = requests.post(url, headers=headers, files=files, data=data)
-        return response.json()
+        response = self._client.files_getUploadURLExternal(
+            filename=file_path,
+            length=length + 16,
+            initial_comment=f"Here is the SHAP plot for {antares_id}",
+        )
+        
+        upload_url = response.get('upload_url')
+        file_id = response.get('file_id')
+        
+        with open(file_path, 'rb') as f:
+            file_data = f.read()
+            put_response = requests.put(upload_url, data=file_data)
+            print(put_response)
+            
+       # confirm upload
+        response = self._client.files_completeUploadExternal(
+            files=[{'id': file_id,},],
+            channels=self.channel_id,
+        )
+        return file_id
 
     def make_file_public(self, token, file_id):
         """Make file publicly accessible by all members.
@@ -161,23 +173,16 @@ class ShapleyPlotLAISS(dk.Filter):
             "Authorization": f"Bearer {token}"
         }
         data = {
-            "file": file_id
+            'file': file_id
         }
-        response = requests.post(url, headers=headers, data=data)
-        return response.json()
+        response = requests.put(url, headers=headers, data=data)
+        return response
 
     def share_public_link(self, token, file_id):
         """Get the public URL from the file response.
         """
-        url = "https://slack.com/api/files.info"
-        headers = {
-            "Authorization": f"Bearer {token}"
-        }
-        params = {
-            "file": file_id
-        }
-        response = requests.get(url, headers=headers, params=params)
-        public_url = response.json()['file']['permalink_public']
+        response = self._client.files_info(file=file_id)
+        public_url = response.get('file')['permalink_public']
         return public_url
 
     def format_url(self, url, filename):

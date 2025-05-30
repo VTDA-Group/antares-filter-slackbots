@@ -5,14 +5,13 @@ from astropy.coordinates import SkyCoord
 import astropy.units as u
 import numpy as np
 from pathlib import Path
-from astropy.cosmology import Planck15  # pylint: disable=no-name-in-module
+import pandas as pd
 
 from superphot_plus.samplers.dynesty_sampler import DynestySampler
 from superphot_plus.samplers.numpyro_sampler import SVISampler
 from superphot_plus.priors import SuperphotPrior
 from superphot_plus.model import SuperphotLightGBM
-from snapi import Photometry
-
+from snapi import Photometry, Transient
 
 class SuperphotPlusZTF(dk.Filter):
     NAME = "Superphot+ Supernovae Classification for ZTF"
@@ -58,6 +57,11 @@ class SuperphotPlusZTF(dk.Filter):
             'description': 'Probability associated with the most-likely SN type from the classifier detailed in de Soto et al. 2024.',
         },
         {
+            'name': 'superphot_non_Ia_prob',
+            'type': 'float',
+            'description': 'Probability that event is not a Type Ia.',
+        },
+        {
             'name': 'superphot_plus_classifier',
             'type': 'str',
             'description': 'Classifier type (early or full, LightGBM or MLP, plus version) from de Soto et al. 2024 used for classification.',
@@ -93,6 +97,15 @@ class SuperphotPlusZTF(dk.Filter):
         ANTARES will call this function once at the beginning of each night
         when filters are loaded.
         """
+        self.input_properties = [
+            'ztf_object_id',
+            'nuclear',
+            'best_redshift',
+            'ra',
+            'dec',
+            'name'
+        ]
+            
         self.data_dir = os.path.join(
             Path(__file__).parent.parent.parent.parent.absolute(),
             "data"
@@ -108,18 +121,6 @@ class SuperphotPlusZTF(dk.Filter):
         dustmaps.sfd.fetch()
         from dustmaps.sfd import SFDQuery
         self.dustmap = SFDQuery()
-        
-        # for initial pruning
-        self.variable_catalogs = [
-            "gaia_dr3_variability",
-            "sdss_stars",
-            "bright_guide_star_cat",
-            "asassn_variable_catalog_v2_20190802",
-            "vsx",
-            "linear_ll",
-            "veron_agn_qso", # agn/qso
-            "milliquas", # qso
-        ]
         
         # generate sampling priors
         self.priors = SuperphotPrior.load(
@@ -170,104 +171,14 @@ class SuperphotPlusZTF(dk.Filter):
         )
         self.full_model_z = SuperphotLightGBM.load(full_model_fn)
         self.early_model_z = SuperphotLightGBM.load(early_model_fn)
-
-
-        # subset of features for each classifier
-        self.full_input_features = self.PARAM_NAMES[~self.PARAM_NAMES.isin([
-            "A_ZTF_r", "t_0_ZTF_r",
-        ])]
-        self.early_input_features = self.PARAM_NAMES[~self.PARAM_NAMES.isin([
-            "A_ZTF_r", "t_0_ZTF_r", "gamma_ZTF_r", "gamma_ZTF_g", "tau_fall_ZTF_r", "tau_fall_ZTF_g"
-        ])]
-        self.early_redshift_input_features = self.PARAM_NAMES[~self.PARAM_NAMES.isin([
-            "t_0_ZTF_r", "gamma_ZTF_r", "gamma_ZTF_g", "tau_fall_ZTF_r", "tau_fall_ZTF_g"
-        ])]
-        self.full_redshift_input_features = self.PARAM_NAMES[~self.PARAM_NAMES.isin([
-            "t_0_ZTF_r",
-        ])]
         
         self.score_cutoff = 1.2 # fits with reduced chisq above this are ignored
         self._allowed_types = ['SLSN-I', 'SN Ia', 'SN Ibc', 'SN II', 'SN IIn']
 
     
-    def quality_check(self, ts):
-        """Return True if all quality checks are passed, else False."""
-        if len(ts['ant_passband'].unique()) < 2: # at least 1 point in each band
-            return False
-        
-        if np.ptp(ts['ant_mjd']) < 4.: # at least 4 days of data
-            return False
-        
-        # ignore any events lasting longer than 200 days
-        # note, this will inevitably exclude some SNe, but that's fine
-        if np.ptp(ts['ant_mjd'].quantile([0.1, 0.9])) >= 200.:
-            return False
-        
-        
-        for b in ts['ant_passband'].unique():
-            sub_ts = ts.loc[ts['ant_passband'] == b,:]
-            if len(sub_ts) < 5:
-                continue # don't do variability checks if < 5 points
-            
-            # first variability cut
-            if np.ptp(sub_ts['ant_mag']) < 3 * sub_ts['ant_magerr'].mean():
-                return False
-            
-            # second variability cut
-            if sub_ts['ant_mag'].std() < sub_ts['ant_magerr'].mean():
-                return False
-            
-            # third variability cut
-            if np.ptp(sub_ts['ant_mag']) < 0.5: # < 0.5 mag spread
-                return False
-
-        return True
-
-    
-    def run(self, locus):
+    def generate_antares_phot(self, ts):
+        """Generate SNAPI photometry from ANTARES time series.
         """
-        Runs a filter that fits all transients tagged with supernovae-like properties to the model
-        described by de Soto et al, 2024. Saves the median model parameters found using SVI or nested sampling
-        to later be input into the classifier of choice. Then, inputs all posterior sample model parameters
-        in a pre-trained classifier to estimate the most-likely SN class and confidence score.
-        
-        Parameters
-        ----------
-        locus : Locus object
-            the SN-like transient to be fit
-        """
-        # checks associated catalogs
-        cats = locus.catalog_objects
-        for cat in cats:
-            if cat in self.variable_catalogs:
-                locus.properties['superphot_plus_valid'] = 0
-                return None # marked as variable star or AGN
-        
-        # gets dataframe with locus alerts, ordered by mjd
-        ts = locus.lightcurve[[
-            'ant_mjd', 'ant_mag', 'ant_magerr', 'ant_passband', 'ant_ra', 'ant_dec'
-        ]]#.to_pandas() # may have to turn this back on for actual submission
-
-        if ts['ant_ra'].std() > 0.5 / 3600.: # arcsec
-            locus.properties['superphot_plus_valid'] = 0
-            return None # marked as variable star or AGN
-        
-        if ts['ant_dec'].std() > 0.5 / 3600.: # arcsec
-            locus.properties['superphot_plus_valid'] = 0
-            return None # marked as variable star or AGN
-        
-        ts.drop(columns=['ant_ra', 'ant_dec'], inplace=True)
-
-        # removes rows with nan values
-        ts.dropna(inplace=True)
-
-        # drops i-band data
-        ts = ts[ts['ant_passband'] != 'i']
-
-        if not self.quality_check(ts):
-            locus.properties['superphot_plus_valid'] = 0
-            return None
-
         # renames dataframe to be SNAPI-compatible
         ts.rename(columns={
             'ant_mjd': 'mjd',
@@ -289,17 +200,6 @@ class SuperphotPlusZTF(dk.Filter):
             'ZTF_r', 'ZTF_g'
         )
         ts['zeropoint'] = 23.90 # AB mag
-        
-        # extract redshift
-        tns_redshift = locus.extra_properties['tns_redshift']
-        if ~np.isnan(tns_redshift) and (tns_redshift > 0.):
-            redshift = tns_redshift
-        elif locus.extra_properties['high_host_confidence'] and (
-            ~np.isnan(locus.extra_properties['host_redshift'])
-        ) and (locus.extra_properties['host_redshift'] > 0.):
-            redshift = locus.extra_properties['host_redshift']
-        else:
-            redshift = np.nan
     
         # phases, normalizes, and extinction-corrects photometry
         phot = Photometry(ts) # SNAPI photometry object
@@ -310,24 +210,90 @@ class SuperphotPlusZTF(dk.Filter):
             new_lcs.append(lc)
         
         phot = Photometry.from_light_curves(new_lcs)
+        return phot
+    
+    
+    def evaluate_cal_probs(self, model, orig_features):
+        input_features = model.best_model.feature_name_
+        test_features = model.normalize(orig_features[input_features])
+        
+        probabilities = pd.DataFrame(
+            model.best_model.predict_proba(test_features),
+            index=test_features.index
+        )
+        
+        probabilities.columns = np.sort(self._allowed_types)
+        best_classes = probabilities.idxmax(axis=1)
+        # "probability" = number of fits where that class is the best class
+        # more frequentist in interpretation = better calibrated? idk
+        probs = best_classes.value_counts() / best_classes.count()
+        try:
+            ia_prob = probs[probs.index == "SN Ia"].iloc[0]
+        except:
+            ia_prob = 0.
+        return probs.idxmax(), probs.max(), ia_prob
+        
+    
+    def run(self, event_dict, ts):
+        """
+        Runs a filter that fits all transients tagged with supernovae-like properties to the model
+        described by de Soto et al, 2024. Saves the median model parameters found using SVI or nested sampling
+        to later be input into the classifier of choice. Then, inputs all posterior sample model parameters
+        in a pre-trained classifier to estimate the most-likely SN class and confidence score.
+        
+        Parameters
+        ----------
+        locus : Locus object
+            the SN-like transient to be fit
+        """
+        # skip if nuclear
+        if event_dict['nuclear']:
+            event_dict['superphot_plus_valid'] = 0
+            return event_dict
+        
+        # removes rows with nan values
+        ts.dropna(inplace=True, axis=0)
+
+        if ts['ant_ra'].std() > 0.5 / 3600.: # arcsec
+            event_dict['superphot_plus_valid'] = 0
+            return event_dict # marked as variable star or AGN
+        
+        if ts['ant_dec'].std() > 0.5 / 3600.: # arcsec
+            event_dict['superphot_plus_valid'] = 0
+            return event_dict # marked as variable star or AGN
+        
+        ts.drop(columns=['ant_ra', 'ant_dec'], inplace=True)
+
+        # drops i-band data
+        ts = ts[ts['ant_passband'] != 'i']
+
+        phot = None
+        phot = self.generate_antares_phot(ts)
+            
         phot.phase(inplace=True)
         
         # adjust for time dilation
+        redshift = event_dict['best_redshift']
+        
         if ~np.isnan(redshift):
             phot.times /= (1. + redshift)
             
         phot.truncate(min_t=-50., max_t=100.)
 
         if len(phot) < 2: # removed a filter
-            locus.properties['superphot_plus_valid'] = 0
-            return None
+            event_dict['superphot_plus_valid'] = 0
+            return event_dict
         
-        locus.properties['superphot_plus_valid'] = 1
+        event_dict['superphot_plus_valid'] = 1
         
         phot.correct_extinction(
-            coordinates=SkyCoord(ra = locus.ra * u.deg, dec = locus.dec * u.deg),
+            coordinates=SkyCoord(ra = event_dict['ra'] * u.deg, dec = event_dict['dec'] * u.deg),
             inplace=True
         )
+        # let's recalculate peak_app_mag of extincted LC
+        phot_abs = phot.absolute(redshift=redshift)
+        peak_abs_mag = phot_abs.detections.mag.dropna().min()
+        
         phot.normalize(inplace=True)
 
         # create padded photometry for use in SVI
@@ -340,7 +306,7 @@ class SuperphotPlusZTF(dk.Filter):
                 padded_lcs.append(padded_lc)
             padded_phot = Photometry.from_light_curves(padded_lcs)
         except IndexError: # TODO: fix this in snapi
-            return None
+            return event_dict
 
         # fit with SVI and extract result
         self.svi_sampler.reset() # reinitialize for future SVI fits
@@ -364,17 +330,17 @@ class SuperphotPlusZTF(dk.Filter):
             sampler, results = 'svi', res
 
         for param in results.fit_parameters.columns:
-            locus.properties[f'superphot_plus_{param}'] = results.fit_parameters[param].median()
+            event_dict[f'superphot_plus_{param}'] = results.fit_parameters[param].median()
 
         # save sampler and fit score to output properties
-        locus.properties['superphot_plus_sampler'] = sampler
-        locus.properties['superphot_plus_score'] = np.median(results.score)
+        event_dict['superphot_plus_sampler'] = sampler
+        event_dict['superphot_plus_score'] = np.median(results.score)
 
         # remove fits with reduced chisq above score cutoff
         if orig_size >= 8:
             valid_fits = results.fit_parameters[results.score <= self.score_cutoff]
             if len(valid_fits) == 0:
-                return None
+                return event_dict
         else:
             valid_fits = results.fit_parameters
 
@@ -385,50 +351,42 @@ class SuperphotPlusZTF(dk.Filter):
         uncorr_fits = self.priors.reverse_transform(valid_fits)
 
         # fix index for groupby() operations within model.evaluate()
-        uncorr_fits.index = [locus.locus_id,] * len(uncorr_fits)
+        uncorr_fits.index = [event_dict['name']] * len(uncorr_fits)
+        
         
         if ~np.isnan(redshift):
             # add magnitude to uncorr_fits
-            app_mag = locus.properties['brightest_alert_magnitude']
-            k_corr = 2.5 * np.log10(1.0 + redshift)
-            distmod = Planck15.distmod(redshift).value
-            abs_mag = app_mag - distmod + k_corr
-            uncorr_fits['peak_abs_mag'] = abs_mag
-            locus.properties['peak_abs_mag'] = abs_mag
+            
+            uncorr_fits['peak_abs_mag'] = peak_abs_mag
             
             if len(valid_fits[early_fit_mask]) > len(valid_fits[~early_fit_mask]):
-                probs_avg_z = self.early_model_z.evaluate(
-                    uncorr_fits[self.early_redshift_input_features]
-                )
+                class_z, prob_z, Ia_prob_z = self.evaluate_cal_probs(self.early_model_z, uncorr_fits)
             else:
-                probs_avg_z = self.full_model_z.evaluate(
-                    uncorr_fits[self.full_redshift_input_features]
-                )
-            probs_avg_z.columns = np.sort(self._allowed_types)
-            locus.properties['superphot_plus_class'] = probs_avg_z.idxmax(axis=1).iloc[0]
-            locus.properties['superphot_plus_prob'] = np.round(probs_avg_z.max(axis=1).iloc[0], 3)
+                class_z, prob_z, Ia_prob_z = self.evaluate_cal_probs(self.full_model_z, uncorr_fits)
+                
+            event_dict['superphot_plus_class'] = class_z
+            event_dict['superphot_plus_prob'] = np.round(prob_z, 3)
+            event_dict['superphot_non_Ia_prob'] = 1. - np.round(Ia_prob_z, 3)
 
         
         if len(valid_fits[early_fit_mask]) > len(valid_fits[~early_fit_mask]):
             # use early-phase classifier
-            probs_avg = self.early_model.evaluate(uncorr_fits[self.early_input_features])
-            locus.properties['superphot_plus_classifier'] = 'early_lightgbm_02_2025'
+            class_noz, prob_noz, Ia_prob_noz = self.evaluate_cal_probs(self.early_model, uncorr_fits)
+            event_dict['superphot_plus_classifier'] = 'early_lightgbm_02_2025'
         else:
             # use full-phase classifier
-            probs_avg = self.full_model.evaluate(uncorr_fits[self.full_input_features])
-            locus.properties['superphot_plus_classifier'] = 'full_lightgbm_02_2025'
+            class_noz, prob_noz, Ia_prob_noz = self.evaluate_cal_probs(self.full_model, uncorr_fits)
+            event_dict['superphot_plus_classifier'] = 'full_lightgbm_02_2025'
             
             
         # set predicted SN class and output probability of that classification
-        probs_avg.columns = np.sort(self._allowed_types)
-        sp_class = probs_avg.idxmax(axis=1).iloc[0]
-        sp_prob = np.round(probs_avg.max(axis=1).iloc[0], 3)
-        
         if ~np.isnan(redshift):
-            locus.properties['superphot_plus_class_without_redshift'] = sp_class
-            locus.properties['superphot_plus_prob_without_redshift'] = sp_prob
+            event_dict['superphot_plus_class_without_redshift'] = class_noz
+            event_dict['superphot_plus_prob_without_redshift'] = np.round(prob_noz, 3)
         else:
-            locus.properties['superphot_plus_class'] = sp_class
-            locus.properties['superphot_plus_prob'] = sp_prob
+            event_dict['superphot_plus_class'] = class_noz
+            event_dict['superphot_plus_prob'] = np.round(prob_noz, 3)
+            event_dict['superphot_non_Ia_prob'] = 1. - np.round(Ia_prob_noz, 3)
             
-        locus.tags.append('superphot_plus_classified')
+        event_dict['superphot_plus_classified'] = True
+        return event_dict
