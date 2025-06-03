@@ -13,7 +13,7 @@ def all_current_filters():
     # lookback of 1 day
     ant_retriever = ANTARESRetriever(1.0)
     yse_retriever = YSERetriever(2.0)
-    relaxed_ant_retriever = RelaxedANTARESRetriever(7.0)
+    relaxed_ant_retriever = RelaxedANTARESRetriever(1.0)
     
     current_time = Time.now().mjd
     nuclear = RankingFilter(
@@ -108,12 +108,12 @@ def all_current_filters():
         ascending=True,
     )
     all_filters = [
-        #nuclear,
+        nuclear,
         precursor,
-        #laiss,
-        #sp_bright,
-        #sp,
-        #yse_query,
+        laiss,
+        sp_bright,
+        sp,
+        yse_query,
     ]
     return all_filters
 
@@ -124,11 +124,11 @@ def run():
     
     for filt in all_current_filters():
         for _ in range(3): # three attempts
-            try:
-                ranker.run(filt, 10) # max_num
-                break
-            except:
-                pass
+            #try:
+            ranker.run(filt, 10) # max_num
+            break
+            #except:
+            #    pass
 
 if __name__ == '__main__':
     run()

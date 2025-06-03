@@ -4,6 +4,7 @@ import os
 import requests
 from requests.auth import HTTPBasicAuth
 from pathlib import Path
+import multiprocessing as mp
 
 import json
 import datetime
@@ -78,6 +79,17 @@ class ANTARESRetriever(Retriever):
         )
         self._query = []
         self._alerce_client = Alerce()
+
+        self.var_catalogs = [
+            "gaia_dr3_variability",
+            "sdss_stars",
+            "bright_guide_star_cat",
+            "asassn_variable_catalog_v2_20190802",
+            "vsx",
+            "linear_ll",
+            "veron_agn_qso", # agn/qso
+            "milliquas", # qso
+        ]
         
         
     def add_alerce_phot(self, lc, ztf_name):
@@ -140,24 +152,10 @@ class ANTARESRetriever(Retriever):
     def star_catalog_check(self, locus):
         """Check whether locus is in star or AGN catalog.
         """
-        var_catalogs = [
-            "gaia_dr3_variability",
-            "sdss_stars",
-            "bright_guide_star_cat",
-            "asassn_variable_catalog_v2_20190802",
-            "vsx",
-            "linear_ll",
-            "veron_agn_qso", # agn/qso
-            "milliquas", # qso
-        ]
-        for cat in locus.catalog_objects:
-            if cat in var_catalogs:
+        if 'gaia_dr3_gaia_source' in locus.catalog_objects:
+            info = locus.catalog_objects['gaia_dr3_gaia_source'][0]
+            if (info['parallax'] is not None) and ~np.isnan(info['parallax']):
                 return False
-            
-            if cat == 'gaia_dr3_gaia_source':
-                info = locus.catalog_objects[cat][0]
-                if (info['parallax'] is not None) and ~np.isnan(info['parallax']):
-                    return False
             
         return True
     
@@ -170,7 +168,12 @@ class ANTARESRetriever(Retriever):
                 "bool": {
                     "filter": {
                         "bool": {
-                            "must": self._query
+                            "must": self._query,
+                            "must_not":  [{
+                                "terms": {
+                                    "catalogs": self.var_catalogs
+                                }
+                            },],
                         }
                     }
                 }
@@ -178,7 +181,52 @@ class ANTARESRetriever(Retriever):
         }
         return antares_client.search.search(full_query)
     
-    
+
+    def _process_single_locus(self, args):
+        """
+        Worker function to process one locus. 
+        Receives a tuple (locus, full_table, host_properties, _mjd, filt_input_props).
+        Returns (locus_id, new_lc, locus_dict) or None if skipped.
+        """
+        locus_dict, ts, properties, catalog_objects, filt_input_props = args
+
+        if 'nuclear' not in locus_dict: # not already saved
+            if not self.quality_check(ts):
+                return None
+
+            nuclear_flag = self.is_it_nuclear(locus_dict['ra'], locus_dict['dec'])
+            locus_dict['nuclear'] = nuclear_flag
+
+        new_lc = self.add_alerce_phot(ts, properties['ztf_object_id'])
+
+        # 4) Extract TNS information
+        if 'tns_public_objects' in catalog_objects:
+            tns = catalog_objects['tns_public_objects'][0]
+            tns_name, tns_cls, tns_redshift = tns['name'], tns['type'], tns['redshift']
+            if tns_cls == '':
+                tns_cls = '---'
+            if tns_redshift is None:
+                tns_redshift = np.nan
+        else:
+            tns_name, tns_cls, tns_redshift = '---', '---', np.nan
+
+        locus_dict['tns_name'] = tns_name
+        if not isinstance(tns_cls, str):
+            tns_cls = '---'
+        locus_dict['tns_class'] = tns_cls
+        locus_dict['tns_redshift'] = tns_redshift
+        locus_dict['brightest_alert_magnitude'] = properties['brightest_alert_magnitude']
+        locus_dict['peak_phase'] = self._mjd - properties['brightest_alert_observation_time']
+
+        # 5) Add any other filter‐specific properties
+        for p in filt_input_props:
+            if p not in locus_dict and p not in self.host_properties:
+                locus_dict[p] = properties.get(p, None)
+
+        print(locus_dict['name'])
+        return (locus_dict['name'], new_lc, locus_dict)
+
+        
     def process_query_results(self, loci, filt: RankingFilter):
         """Filter query results by preprocessing checks.
         Returns dataframe.
@@ -190,88 +238,59 @@ class ANTARESRetriever(Retriever):
             full_table = None
             
         ts_dict = {}
-            
+        worker_args = []
+
+        # initial locus filter
         for i, locus in enumerate(loci):
             if i % 100 == 0:
                 print(f"Processed {i} loci...")
-                                
-            if (full_table is not None) and (locus.locus_id in full_table['name'].to_numpy()):
-                locus_dict = full_table.loc[
-                    full_table['name'] == locus.locus_id,
-                    ['name', 'ra', 'dec', 'nuclear']
-                ].iloc[0].to_dict()
-                
+
+            # 1) Check if locus in full_table
+            if full_table is not None and (locus.locus_id in full_table['name'].to_numpy()):
+                row = full_table.loc[full_table['name'] == locus.locus_id, ['name', 'ra', 'dec', 'nuclear']].iloc[0]
+                locus_dict = row.to_dict()
             else:
+                # 2) Check star catalog
                 if not self.star_catalog_check(locus):
                     continue
-                    
-                try:
-                    ts = locus.lightcurve[[
-                        'ant_mjd', 'ant_mag', 'ant_magerr', 'ant_passband', 'ant_ra', 'ant_dec'
-                    ]].to_pandas() # may have to turn this back on for actual submission
-                except:
-                    ts = locus.lightcurve[[
-                        'ant_mjd', 'ant_mag', 'ant_magerr', 'ant_passband', 'ant_ra', 'ant_dec'
-                    ]]
-
-                # removes rows with nan values (aka upper limits)
-                ts.dropna(inplace=True, axis=0, ignore_index=True)
-                
-                if not self.quality_check(ts):
-                    continue
-
-                # Is it nuclear?
-                nuclear_flag = self.is_it_nuclear(locus.ra, locus.dec)
 
                 locus_dict = {
                     'name': locus.locus_id,
                     'ra': locus.ra,
                     'dec': locus.dec,
-                    'nuclear': nuclear_flag,
                 }
-                
+
             try:
-                lc = locus.lightcurve[[
+                ts = locus.lightcurve[[
                     'ant_mjd', 'ant_mag', 'ant_magerr', 'ant_passband', 'ant_ra', 'ant_dec'
-                ]].to_pandas() # may have to turn this back on for actual submission
+                ]].to_pandas()
             except:
-                lc = locus.lightcurve[[
+                ts = locus.lightcurve[[
                     'ant_mjd', 'ant_mag', 'ant_magerr', 'ant_passband', 'ant_ra', 'ant_dec'
                 ]]
-            lc.dropna(inplace=True, axis=0, ignore_index=True)
-            new_lc = self.add_alerce_phot(lc, locus.properties['ztf_object_id'])
-            ts_dict[locus.locus_id] = new_lc
-            
-            if 'tns_public_objects' in locus.catalog_objects:
-                tns = locus.catalog_objects['tns_public_objects'][0]
-                tns_name, tns_cls, tns_redshift = tns['name'], tns['type'], tns['redshift']
-                #if tns_cls == 'SN Ia':
-                #    continue # ignoring the Ia's because I can
-                if tns_cls == '':
-                    tns_cls = '---'
-                if tns_redshift is None:
-                    tns_redshift = np.nan
-            else:
-                tns_name, tns_cls, tns_redshift = '---', '---', np.nan
-                
-            locus_dict['tns_name'] = tns_name
-            
-            if not isinstance(tns_cls, str):
-                print(tns_cls)
-                tns_cls = '---'
-                
-            locus_dict['tns_class'] = tns_cls
-            locus_dict['tns_redshift'] = tns_redshift
-            locus_dict['brightest_alert_magnitude'] = locus.properties['brightest_alert_magnitude']
-            locus_dict['peak_phase'] = self._mjd - locus.properties['brightest_alert_observation_time']
-            
-            for p in filt._filt.input_properties:
-                if (p not in locus_dict) and (p not in self.host_properties):
-                    locus_dict[p] = locus.properties[p]
-            
-            print(locus_dict)
-            processed_dicts.append(locus_dict)
-                    
+            ts.dropna(inplace=True, axis=0, ignore_index=True)
+
+            worker_args.append((locus_dict, ts, locus.properties, locus.catalog_objects, filt._filt.input_properties))
+
+        # 4) Use 'spawn' start method to avoid fork issues with JAX
+        ctx = mp.get_context("spawn")
+        with ctx.Pool(processes=8) as pool:
+            ts_dict = {}
+            processed_dicts = []
+
+            # Use imap, which yields results one by one in order:
+            for i, out in enumerate(pool.imap(self._process_single_locus, worker_args), start=1):
+                # Print progress every 50 or 100 loci:
+                if i % 10 == 0 or i == len(worker_args):
+                    print(f"  → main: completed {i}/{len(worker_args)} loci")
+
+                if out is None:
+                    continue
+
+                locus_id, new_lc, locus_dict = out
+                ts_dict[locus_id] = new_lc
+                processed_dicts.append(locus_dict)
+
         if len(processed_dicts) == 0:
             return None, None
             
@@ -398,7 +417,7 @@ class YSERetriever(Retriever):
             self._base_url,
             f"transients/?created_date_gte={filt_date_oldest}"
         )
-        transient_url += "&tag_in=YSE&limit=10000"
+        transient_url += "&tag_in=YSE&limit=10_000"
         transient_url += f"&modified_date_gte={filt_date_newest}"
 
         response = requests.get(transient_url, auth=self._auth).json()
@@ -493,16 +512,16 @@ class YSERetriever(Retriever):
                 
             if not self.quality_check(detections):
                 continue
+
+            tns_name, tns_cls, tns_redshift, ra, dec = self.get_tns_info(transient)
                                                 
             if (full_table is not None) and (transient in full_table['name'].to_numpy()):
                 locus_dict = full_table.loc[
                     full_table['name'] == transient,
-                    ['name', 'ra', 'dec', 'tns_name', 'tns_class', 'tns_redshift', 'nuclear']
+                    ['name', 'ra', 'dec', 'nuclear']
                 ].iloc[0].to_dict()
                 
             else:
-                tns_name, tns_cls, tns_redshift, ra, dec = self.get_tns_info(transient)
-
                 # Is it nuclear?
                 nuclear_flag = self.is_it_nuclear(ra, dec)
 
@@ -510,13 +529,21 @@ class YSERetriever(Retriever):
                     'name': transient,
                     'ra': ra,
                     'dec': dec,
-                    'tns_name': tns_name,
-                    'tns_class': tns_cls,
-                    'tns_redshift': tns_redshift,
                     'nuclear': nuclear_flag,
                 }
                 
             ts_dict[transient] = detections
+
+            locus_dict['tns_name'] = tns_name
+            if not isinstance(tns_cls, str):
+                tns_cls = '---'
+
+            if not isinstance(tns_redshift, float):
+                print(tns_redshift)
+                tns_redshift = np.nan
+                
+            locus_dict['tns_class'] = tns_cls
+            locus_dict['tns_redshift'] = tns_redshift
             locus_dict['brightest_alert_magnitude'] =(detections['ant_mag'] + detections['ant_magerr']).min()
             locus_dict['peak_phase'] = self._mjd - self.brightest_time(detections)
             """
@@ -544,36 +571,41 @@ class RelaxedANTARESRetriever(ANTARESRetriever):
         self._prost_path = os.path.join(
             Path(__file__).parent.parent.parent.absolute(), "data/PROST_relaxed.csv"
         )
+        self.var_catalogs = ["bright_guide_star_cat",]
         
         
     def star_catalog_check(self, locus):
         """Check whether locus is in star or AGN catalog.
         """
-        var_catalogs = [
-            "bright_guide_star_cat",
-        ]
-        for cat in locus.catalog_objects:
-            if cat in var_catalogs:
-                return False
-            
-            info = locus.catalog_objects[cat][0]
-            if cat == 'linear_ll':
-                if (info['dist'] is not None) and ~np.isnan(info['dist']):
-                    if info['dist'] < 20_000:
-                        return False
-            
-            if cat in ['veron_agn_qso', 'milliquas']:
-                if (info['z'] is not None) and ~np.isnan(info['z']):
-                    if info['z'] > 0.03:
-                        return False
-            
-            if cat == 'gaia_dr3_gaia_source':
-                info = locus.catalog_objects[cat][0]
-                if (info['parallax'] is not None) and ~np.isnan(info['parallax']):
+        if "bright_guide_star_cat" in locus.catalog_objects:
+            print("CATALOG PRUNE FAILED!")
+            return False
+
+        if 'linear_ll' in locus.catalog_objects:
+            info = locus.catalog_objects['linear_ll'][0]
+            if (info['dist'] is not None) and ~np.isnan(info['dist']):
+                if info['dist'] < 20_000:
                     return False
-                if (info['distance_gspphot'] is not None) and ~np.isnan(info['distance_gspphot']):
-                    if info['distance_gspphot'] < 20_000: # in milky way
-                        return False
+            
+        if 'veron_agn_qso' in locus.catalog_objects:
+            info = locus.catalog_objects['veron_agn_qso'][0]
+            if (info['z'] is not None) and ~np.isnan(info['z']):
+                if info['z'] > 0.03:
+                    return False
+                
+        if 'milliquas' in locus.catalog_objects:
+            info = locus.catalog_objects['milliquas'][0]
+            if (info['z'] is not None) and ~np.isnan(info['z']):
+                if info['z'] > 0.03:
+                    return False
+                    
+        if 'gaia_dr3_gaia_source' in locus.catalog_objects:
+            info = locus.catalog_objects['gaia_dr3_gaia_source'][0]
+            if (info['parallax'] is not None) and ~np.isnan(info['parallax']):
+                return False
+            if (info['distance_gspphot'] is not None) and ~np.isnan(info['distance_gspphot']):
+                if info['distance_gspphot'] < 20_000: # in milky way
+                    return False
             
         return True
     
@@ -583,6 +615,87 @@ class RelaxedANTARESRetriever(ANTARESRetriever):
     
 
 class ArchivalYSERetriever(YSERetriever):
+    def __init__(self, lookback_days=1.0):
+        super().__init__(lookback_days)
+        self._prost_path = os.path.join(
+            Path(__file__).parent.parent.parent.absolute(), "data/PROST_archival.csv"
+        )
+
+    def retrieve_candidates(self, filt, max_num):
+        """Main loop to retrieve YSE transients from 
+        the night, get light curves, quality check, and return df.
+        """
+        self.check_watch()
+        processed_dicts = []
+        
+        if os.path.exists(self._prost_path):
+            full_table = pd.read_csv(self._prost_path)
+        else:
+            full_table = None
+            
+        nightly_transients = self.query_all_yse_recent()
+        ts_dict = {}
+
+        for i, transient in enumerate(nightly_transients):
+            
+            if i % 10 == 0:
+                print(f"Pre-processed {i} transients...")
+                                 
+            ts = self.retrieve_yse_photometry(transient)
+            if ts is None:
+                continue
+                
+            detections = ts.loc[ts['ant_magerr'] < 0.362]
+                
+            if not self.quality_check(detections):
+                continue
+
+            tns_name, tns_cls, tns_redshift, ra, dec = self.get_tns_info(transient)
+                                                
+            if (full_table is not None) and (transient in full_table['name'].to_numpy()):
+                locus_dict = full_table.loc[
+                    full_table['name'] == transient,
+                    ['name', 'ra', 'dec', 'nuclear']
+                ].iloc[0].to_dict()
+                
+            else:
+                # Is it nuclear?
+                nuclear_flag = self.is_it_nuclear(ra, dec)
+
+                locus_dict = {
+                    'name': transient,
+                    'ra': ra,
+                    'dec': dec,
+                    'nuclear': nuclear_flag,
+                }
+                
+            ts_dict[transient] = detections
+
+            locus_dict['tns_name'] = tns_name
+            if not isinstance(tns_cls, str):
+                tns_cls = '---'
+            if not isinstance(tns_redshift, float):
+                print(tns_redshift)
+                tns_redshift = np.nan
+            locus_dict['tns_class'] = tns_cls
+            locus_dict['tns_redshift'] = tns_redshift
+            locus_dict['brightest_alert_magnitude'] =(detections['ant_mag'] + detections['ant_magerr']).min()
+            locus_dict['peak_phase'] = self._mjd - self.brightest_time(detections)
+            """
+            if filt._filt is not None:
+                for p in filt._filt.input_properties:
+                    if (p not in locus_dict) and (p not in self.host_properties):
+                        locus_dict[p] = locus.properties[p]
+            """
+                
+            processed_dicts.append(locus_dict)
+            
+        if len(processed_dicts) == 0:
+            return None, None
+            
+        locus_df = pd.DataFrame.from_records(processed_dicts)
+        return locus_df, ts_dict
+
     def query_all_yse_recent(self):
         """Query all YSE transients with last detection in a certain time range."""
         updated_transients = set()
@@ -590,7 +703,7 @@ class ArchivalYSERetriever(YSERetriever):
         # get transients within that range
         transient_url = os.path.join(
             self._base_url,
-            f"transients/?tag_in=YSE&limit=1000"
+            f"transients/?limit=1000"
         )
 
         response = requests.get(transient_url, auth=self._auth).json()
@@ -604,28 +717,21 @@ class ArchivalYSERetriever(YSERetriever):
 
         while len(transients) > 0:
             for t in transients:
-                if t['name'][:4].isnumeric(): # TNS
+                if 'YSE' not in t['name']: # TNS
                     print(t['name'])
                     continue
-                if self._yse_tag not in t['tags']:
-                    continue
-                #if self.parse_modified_mjd(t['modified_date']) < self._mjd - self._lookback:      
-                #    print(t['modified_date'])
-                #    continue
-                if t['status'] in self._ignore_status:
-                    continue
-                if t["TNS_spec_class"] == 'SN Ia':
-                    continue
-
                 transient_names.append(t['name'])
             
-            print(response['next'])
             if response['next'] is not None:
-                response = requests.get(transient_url, auth=self._auth).json()
+                print(response['next'])
                 try:
+                    response = requests.get(response['next'], auth=self._auth).json()
                     transients = response['results']
                 except:
                     transients = []
+
+            else:
+                transients = []
             
         print(len(transient_names))
 
@@ -655,8 +761,224 @@ class TestANTARESRetriever(RelaxedANTARESRetriever):
         self.check_watch()
         out1, out2 = self.process_query_results(loci, filt)
         return out1, out2
+
+class TNSRetriever(Retriever):
+    """Grabs all new TNS events without ZTF names, adds ATLAS forced photometry (if possible),
+    and applies quality cuts.
+    """
+    def __init__(self, lookback_days=1.):
+        """All URLs go here."""
+        super().__init__(lookback_days)
+        self._prost_path = os.path.join(
+            Path(__file__).parent.parent.parent.absolute(), "data/PROST_TNS.csv"
+        )
+        
+        self._base_url  = "https://ziggy.ucolick.org/yse/api"
+        self._current_time = datetime.datetime.utcnow()
+        self._current_mjd = Time.now().mjd
+                
+        self.save_prefix = os.path.join(os.path.dirname(
+            os.path.dirname(
+                os.path.dirname(__file__)
+            ) # src
+        ), "data", "yse")
+        os.makedirs(self.save_prefix, exist_ok=True)
+        
+        self._auth = HTTPBasicAuth(login_ysepz, password_ysepz)
+        
+        
+    def quality_check(self, ts):
+        return yse_quality_check(ts)
+        
+        
+    def retrieve_yse_photometry(self, transient_name):
+        """Retrieve YSE photometry for a given transient name.
+        """
+        url = f'https://ziggy.ucolick.org/yse/download_photometry/{transient_name}'
+        phot_data = requests.get(url, auth=self._auth).content
+        try:
+            df = pd.read_table(BytesIO(phot_data), sep='\s+', comment='#')
+        except:
+            return None
+        ts = df[['MJD', 'FLT', 'MAG', 'MAGERR']]
+        ts.rename(
+            columns={
+                'MJD': 'ant_mjd',
+                'MAG': 'ant_mag',
+                'MAGERR': 'ant_magerr',
+                'FLT': 'ant_passband',
+            },
+            inplace=True
+        )
+        # if magerr == 5.0 or is negative, not a valid datapoint
+        mask = (ts['ant_magerr'] == 5.0) | (ts['ant_magerr'] <= 0.0)
+        ts = ts.loc[~mask]
+        # removes rows with nan values (aka upper limits)
+        ts.dropna(inplace=True, axis=0, ignore_index=True)
+        return ts
     
     
+    def query_all_yse_recent(self):
+        """Query all YSE transients with last detection in a certain time range."""
+        updated_transients = set()
+        filt_date_oldest = (
+            datetime.datetime.utcnow()-datetime.timedelta(200.)
+        ).replace(microsecond=0).isoformat() + "Z"
+        filt_date_newest = (
+            datetime.datetime.utcnow()-datetime.timedelta(self._lookback)
+        ).replace(microsecond=0).isoformat() + "Z"
+            
+        # get transients within that range
+        transient_url = os.path.join(
+            self._base_url,
+            f"transients/?created_date_gte={filt_date_oldest}"
+        )
+        transient_url += "&tag_in=YSE&limit=10_000"
+        transient_url += f"&modified_date_gte={filt_date_newest}"
+
+        response = requests.get(transient_url, auth=self._auth).json()
+        try:
+            transients = response['results']
+        except:
+            return []
+
+        transient_names = []
+
+        for t in transients:
+            if self._yse_tag not in t['tags']:
+                continue
+            if self.parse_modified_mjd(t['modified_date']) < self._mjd - self._lookback:      
+                print(t['modified_date'])
+                continue
+            if t['status'] in self._ignore_status:
+                continue
+            if t["TNS_spec_class"] == 'SN Ia':
+                continue
+
+            transient_names.append(t['name'])
+            
+        print(len(transient_names))
+
+        #updated_transients.update(transient_names)
+            
+        return transient_names
+    
+    
+    def parse_modified_mjd(self, date_str):
+        """Extract MJD from modified_date."""
+        t = Time(date_str, format='isot')
+        return t.mjd
+    
+    
+    def brightest_time(self, ts):
+        """Find brightest time."""
+        bright_idx = (ts['ant_mag'] + ts['ant_magerr']).idxmin()
+        return ts.loc[bright_idx, 'ant_mjd']
+    
+    
+    def get_tns_info(self, transient_name):
+        """Get TNS info from transient (plus RA and DEC)."""
+        transient_url = os.path.join(
+            self._base_url, f"transients/?name={transient_name}"
+        )
+        transient = requests.get(transient_url, auth=self._auth).json()['results'][0]
+        spec_url = transient['best_spec_class']
+        
+        if spec_url is not None:
+            spec_class = requests.get(spec_url, auth=self._auth).json()['name']
+        else:
+            spec_class = None
+            
+        if "YSE" in transient['name']:
+            tns_name = None
+        else:
+            tns_name = transient['name']
+            
+        return tns_name, spec_class, transient['redshift'], transient['ra'], transient['dec']
+    
+    
+    def retrieve_candidates(self, filt, max_num):
+        """Main loop to retrieve YSE transients from 
+        the night, get light curves, quality check, and return df.
+        """
+        self.check_watch()
+        processed_dicts = []
+        
+        if os.path.exists(self._prost_path):
+            full_table = pd.read_csv(self._prost_path)
+        else:
+            full_table = None
+            
+        nightly_transients = self.query_all_yse_recent()
+        ts_dict = {}
+
+        for i, transient in enumerate(nightly_transients):
+            
+            if i % 10 == 0:
+                print(f"Pre-processed {i} transients...")
+                                 
+            ts = self.retrieve_yse_photometry(transient)
+            if ts is None:
+                continue
+                
+            detections = ts.loc[ts['ant_magerr'] < 0.362]
+            
+            if self._mjd - detections['ant_mjd'].max() > self._lookback:
+                continue
+                
+            if not self.quality_check(detections):
+                continue
+
+            tns_name, tns_cls, tns_redshift, ra, dec = self.get_tns_info(transient)
+                                                
+            if (full_table is not None) and (transient in full_table['name'].to_numpy()):
+                locus_dict = full_table.loc[
+                    full_table['name'] == transient,
+                    ['name', 'ra', 'dec', 'nuclear']
+                ].iloc[0].to_dict()
+                
+            else:
+                # Is it nuclear?
+                nuclear_flag = self.is_it_nuclear(ra, dec)
+
+                locus_dict = {
+                    'name': transient,
+                    'ra': ra,
+                    'dec': dec,
+                    'nuclear': nuclear_flag,
+                }
+                
+            ts_dict[transient] = detections
+
+            locus_dict['tns_name'] = tns_name
+            if not isinstance(tns_cls, str):
+                tns_cls = '---'
+
+            if not isinstance(tns_redshift, float):
+                print(tns_redshift)
+                tns_redshift = np.nan
+                
+            locus_dict['tns_class'] = tns_cls
+            locus_dict['tns_redshift'] = tns_redshift
+            locus_dict['brightest_alert_magnitude'] =(detections['ant_mag'] + detections['ant_magerr']).min()
+            locus_dict['peak_phase'] = self._mjd - self.brightest_time(detections)
+            """
+            if filt._filt is not None:
+                for p in filt._filt.input_properties:
+                    if (p not in locus_dict) and (p not in self.host_properties):
+                        locus_dict[p] = locus.properties[p]
+            """
+                
+            processed_dicts.append(locus_dict)
+            
+        if len(processed_dicts) == 0:
+            return None, None
+            
+        locus_df = pd.DataFrame.from_records(processed_dicts)
+        return locus_df, ts_dict
+
+
 if __name__ == "__main__":
     retriever = YSERetriever(lookback_days=1.)
     df = retriever.run(10)
+

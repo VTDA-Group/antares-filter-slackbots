@@ -1,18 +1,17 @@
 import os
+import gc
 import time
 from pathlib import Path
-import subprocess
-import glob
 from typing import Any, Optional
 from datetime import datetime, timedelta
 import requests
+import requests_cache
 from requests.auth import HTTPBasicAuth
 
 import numpy as np
 import pandas as pd
 from scipy.stats import uniform, gamma, halfnorm
 from dustmaps.config import config as dustmaps_config
-from astropy.time import Time
 import astropy.units as u
 from astropy.cosmology import Planck15  # pylint: disable=no-name-in-module
 from astropy.coordinates import SkyCoord, Angle
@@ -24,6 +23,7 @@ from antares_filter_slackbots.slack_formatters import SlackPoster
 from antares_filter_slackbots.slack_requests import *
 from antares_filter_slackbots.auth import login_ysepz, password_ysepz
 
+import pandas as pd
 
 import warnings
 warnings.filterwarnings('ignore')
@@ -276,6 +276,8 @@ class ANTARESRanker:
                     f['field_id']
                 ]
             )
+        
+        
     
     
     def is_it_nuclear(self, locus):
@@ -407,26 +409,36 @@ class ANTARESRanker:
     
     
     def associate_sample_prost(self, df, priors, likelis):
-        max_size = 10 # only associate 10 at a time or it freezes
+        max_size = 40 # only associate 10 at a time or it freezes
         list_df = [df[i:i + max_size] for i in range(0, len(df), max_size)]
         merged_hosts = []
-        
-        for df_i in list_df:
-            merged_hosts_i = associate_sample(
-                df_i,
-                priors=priors,
-                likes=likelis,
-                catalogs=['glade', 'decals',],
-                parallel=False,
-                verbose=0,
-                save=False,
-                progress_bar=False,
-                cat_cols=True,
-                name_col='name',
-                coord_cols=('ra', 'dec'),
-            )
+
+        t = time.time()        
+        for i, df_i in enumerate(list_df):
+            for _ in range(5):
+                try:
+                    merged_hosts_i = associate_sample(
+                        df_i,
+                        priors=priors,
+                        likes=likelis,
+                        catalogs=['glade', 'decals',],
+                        parallel=False,
+                        verbose=0,
+                        save=False,
+                        progress_bar=False,
+                        cat_cols=True,
+                        name_col='name',
+                        coord_cols=('ra', 'dec'),
+                    )
+                    break
+                except:
+                    continue
             print(len(merged_hosts_i))
             merged_hosts.append(merged_hosts_i)
+            del merged_hosts_i
+            gc.collect()
+            print(f"Time after chunk {i}: {time.time() - t}")
+            t = time.time()
             
         merged_hosts_concat = pd.concat(merged_hosts, ignore_index=True)
         return merged_hosts_concat
