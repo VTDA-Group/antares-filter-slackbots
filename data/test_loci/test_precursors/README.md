@@ -1,0 +1,1 @@
+Note: these only contain the precursor (pre-explosion) portions of light curves, even if the full light curve was observed afterwards. This is meant to test the proactive precursor bot!

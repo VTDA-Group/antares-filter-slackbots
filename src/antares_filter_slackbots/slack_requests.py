@@ -1,7 +1,7 @@
 # All Slack calls that require the authorization tokens.
 
 import requests as req
-from auth import toku, signing_secret
+from antares_filter_slackbots.auth import toku, signing_secret
 from slack_bolt import App
 from slack_sdk import WebClient
 
@@ -34,7 +34,7 @@ def get_conversation_history(channel):
     return response_data
 
 
-def send_slack_message(client, channel, attachments):
+def send_slack_message(client, channel, attachments, fallback_text=""):
     if len(attachments) > 50:
         attachments_send = attachments[:50]
         remainder = attachments[50:]
@@ -44,13 +44,15 @@ def send_slack_message(client, channel, attachments):
     
     else:
         # Sending the message to Slack
-        response = client.chat_postMessage(
-            channel=channel,
-            text="Fallback text",  # This is plain text for clients that don’t support blocks
-            blocks=attachments
-        )
+        for _ in range(10):
+            response = client.chat_postMessage(
+                channel=channel,
+                text=fallback_text,
+                blocks=attachments
+            )
 
-        if response['ok']:
-            print("Message posted successfully.")
-        else:
-            print(f"Error posting message: {response['error']}")
+            if response['ok']:
+                print("Message posted successfully.")
+                break
+            else:
+                print(f"Error posting message: {response['error']}. Trying again...")

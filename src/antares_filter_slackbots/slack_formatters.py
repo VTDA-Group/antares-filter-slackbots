@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import os
 import re
+import requests
 
 from flask import Flask, request
 from werkzeug.middleware.proxy_fix import ProxyFix
@@ -14,6 +15,15 @@ from antares_filter_slackbots.slack_requests import (
     setup_client
 )
 
+def is_link_accessible(url):
+    try:
+        response = requests.head(url, allow_redirects=True, timeout=5)
+        return response.status_code < 400
+    except requests.RequestException as e:
+        # Could not access the link
+        print(f"Error: {e}")
+        return False
+    
 def generate_context_block(df, obj_id):
     """Construct context block with previous votes for object.
     """
@@ -96,8 +106,8 @@ class SlackPoster:
             Stores extracted locus features to display with Slack bot
         '''
         self._client = setup_client()
-        self._ziggy_url_base = 'https://ziggy.ucolick.org/yse/transient_detail/'
-        self._antares_url_base = 'https://antares.noirlab.edu/loci/'
+        self._tns_url_base = 'https://www.wis-tns.org/object/'
+        self._url_base = 'https://antares.noirlab.edu/loci/'
         self._df = loci_df
         self._meta = filt_meta
 
@@ -110,7 +120,8 @@ class SlackPoster:
         else:
             self._vote_df = None
 
-    def round_sigfigs(self, x, sig=4):
+            
+    def round_sigfigs(self, x, sig=3):
         """Round numerics to sig significant figures.
         """
         if isinstance(x, (int, float, np.number)):  # Check for numeric types
@@ -122,13 +133,14 @@ class SlackPoster:
                 return '---'
             else:
                 return round(x, -int(np.floor(np.log10(abs(x)))) + (sig - 1))
-        elif isinstance(x, str) and x == '':
+        elif isinstance(x, str) and x in ['', 'nan']:
             return '---'
         elif x is None:
             return '---'
         
         return x  # Return as-is if not numeric
 
+    
     def unsnake(self, col):
         """Convert column names from snake case
         to normal spacing/capitalization.
@@ -138,6 +150,7 @@ class SlackPoster:
         c_reformat = ' '.join(c_capitalized)
         return c_reformat
 
+    
     def ps1_pic(self, row):
         """Retrive PS1 image url of entry."""
         if row.dec > -30:
@@ -149,6 +162,7 @@ class SlackPoster:
         
         return None
        
+        
     def voting_action(self, suffix):
         return {
             "type": "actions",
@@ -194,13 +208,29 @@ class SlackPoster:
     
     def generate_single_row_attachment(self, row):
         """Generate attachment for single row/locus."""
-        sub_df = self._vote_df.loc[self._vote_df.index == row.name]
-        
-        if len(sub_df.loc[sub_df.Response == 'downvote']) > 1:
-            return []
+        if self._vote_df is not None:
+            sub_df = self._vote_df.loc[self._vote_df.index == row.name]
 
-        title = f':collision: {row.name} :collision:'
-        title_link = self._antares_url_base + row.name
+            if len(sub_df.loc[sub_df.Response == 'downvote']) > 1:
+                return []
+
+        title_link = self._url_base + row.name
+        
+        if self.round_sigfigs(row.tns_name) != '---':
+            tns_url = self._tns_url_base + row.tns_name
+            if not row.name[:4].isnumeric(): # no repeating titles
+                title_str = f":collision: <{tns_url}|*{row.tns_name}*> | <{title_link}|*{row.name}*>"
+            else:
+                title_str = f":collision: <{tns_url}|*{row.tns_name}*>"
+                
+        elif is_link_accessible(title_link):
+            title_str = f":collision: <{title_link}|*{row.name}*>"
+        else:
+            title_str = f":collision: *{row.name}*"
+            
+        if ('yse_pz' in row.index) and (row.yse_pz is not None):
+            title_str += f" | {row.yse_pz}"
+        title_str += " :collision:"
 
         """
         if not row.posted_before:
@@ -214,7 +244,7 @@ class SlackPoster:
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"<{title_link}|*{title}*>"
+                    "text": title_str
                 }
             },
         ]
@@ -227,33 +257,46 @@ class SlackPoster:
             }
         )
 
-        fields = {
+        fields_overview = {
+            "type": "section",
+            "fields": []
+        }
+        fields_tns = {
             "type": "section",
             "fields": []
         }
 
-        if row.tns_name != '---':
-            tns_url = self._ziggy_url_base + row.tns_name
-            fields['fields'] = [
-                {"type": "mrkdwn", "text": f"*TNS Name*: <{tns_url}|{row.tns_name}>"},
-                {"type": "mrkdwn", "text": f"*TNS Spec. Class*: {row.tns_class}"},
-                {"type": "mrkdwn", "text": f"*TNS Redshift*: {self.round_sigfigs(row.tns_redshift)}"},
-            ]
-
-        fields['fields'].append(
+        fields_overview['fields'].append(
             {"type": "mrkdwn", "text": f"*RA*: {self.round_sigfigs(row.ra)} deg"}
         )
-        fields['fields'].append(
+        fields_overview['fields'].append(
             {"type": "mrkdwn", "text": f"*Declination*: {self.round_sigfigs(row.dec)} deg"}
         )
-        fields['fields'].append(
+        fields_overview['fields'].append(
             {
                 "type": "mrkdwn",
                 "text": f"*Peak Mag*: {self.round_sigfigs(row.peak_mag)}, {self.round_sigfigs(row.peak_phase)} days ago",
             }
         )
+        abs_mag = self.round_sigfigs(row.peak_abs_mag)
+        
+        if abs_mag != '---':
+            fields_overview['fields'].append(
+                {
+                    "type": "mrkdwn",
+                    "text": f"*Peak Abs Mag*: {abs_mag}"
+                }
+            )
+            
+        if self.round_sigfigs(row.yse_field) != '---':
+             fields_overview['fields'].append(
+                {
+                    "type": "mrkdwn",
+                    "text": f"*YSE Field*: {self.round_sigfigs(row.yse_field)}"
+                }
+            )
 
-        attachment.append(fields)
+        attachment.append(fields_overview)
 
         fields_filter = {
             "type": "section",
@@ -265,26 +308,59 @@ class SlackPoster:
         }
         for p in row.index:
             if p in (
-                'tns_name', 'tns_class', 'tns_redshift',
-                'ra', 'dec', 'peak_mag', 'peak_phase',
-                'posted_before'
+                'tns_name', 'ra', 'dec', 'peak_mag', 'peak_abs_mag', 'peak_phase',
+                'posted_before', 'best_redshift', 'yse_pz', 'yse_field'
             ):
                 continue
+            value = self.round_sigfigs(row[p])
                 
-            if self.round_sigfigs(row[p]) == '---':
+            if value == '---': # just exclude for now, can always turn this off
                 continue
                 
-            if "host" in p:
+            if ("host" in p) or (p == 'nuclear'):
                 fields_host['fields'].append(
+                    {"type": "mrkdwn", "text": f"*{self.unsnake(p)}*: {self.round_sigfigs(row[p])}"},
+                )
+            elif ("tns" in p):
+                fields_tns['fields'].append(
                     {"type": "mrkdwn", "text": f"*{self.unsnake(p)}*: {self.round_sigfigs(row[p])}"},
                 )
             else:
                 fields_filter['fields'].append(
                     {"type": "mrkdwn", "text": f"*{self.unsnake(p)}*: {self.round_sigfigs(row[p])}"},
                 )
-
-        attachment.append(fields_host)
-        attachment.append(fields_filter)
+        
+        if len(fields_tns['fields']) > 0:
+            attachment.append(fields_tns)
+        if len(fields_host['fields']) > 0:
+            if len(fields_host['fields']) > 8:
+                fields_host1 = {
+                    "type": "section",
+                    "fields": fields_host['fields'][:8]
+                }
+                fields_host2 = {
+                    "type": "section",
+                    "fields": fields_host['fields'][8:]
+                }
+                attachment.append(fields_host1)
+                attachment.append(fields_host2)
+            else:
+                attachment.append(fields_host)
+                
+        if len(fields_filter['fields']) > 0:
+            if len(fields_filter['fields']) > 8:
+                fields_filter1 = {
+                    "type": "section",
+                    "fields": fields_filter['fields'][:8]
+                }
+                fields_filter2 = {
+                    "type": "section",
+                    "fields": fields_filter['fields'][8:]
+                }
+                attachment.append(fields_filter1)
+                attachment.append(fields_filter2)
+            else:
+                attachment.append(fields_filter)
         
         attachment.append(self.voting_action(row.name))
 
@@ -322,11 +398,13 @@ class SlackPoster:
                     "type": "divider"
                 },
             ]
+            send_slack_message(self._client, channel, attachments, "Today's Candidates")
+            
             for (_, row) in self._df.iterrows():
-                attachments.extend(
-                    self.generate_single_row_attachment(row)
-                )
-            send_slack_message(self._client, channel, attachments)
+                attachments = self.generate_single_row_attachment(row)
+                if len(attachments) > 0:
+                    send_slack_message(self._client, channel, attachments)
+                
 
         else:
             groupby_col = self._meta['groupby']
@@ -345,15 +423,14 @@ class SlackPoster:
                         "type": "divider"
                     },
                 ]
-                #if self._meta[f'overflow_{groupby_val}']:
-                #    header += f"(limiting to top {self._meta['max_num']}, with >0.5 arcsec host offset)"
+                send_slack_message(self._client, channel, attachments)
+                
                 for (_, row) in self._df.loc[
                     self._df[groupby_col] == groupby_val
                 ].iterrows():
-                    attachments.extend(
-                        self.generate_single_row_attachment(row)
-                    )
-                send_slack_message(self._client, channel, attachments)
+                    attachments = self.generate_single_row_attachment(row)
+                    if len(attachments) > 0:
+                        send_slack_message(self._client, channel, attachments, row.name)
 
     def post_empty(self, channel):
         """Post message about no events.
@@ -456,13 +533,13 @@ class SlackVoteHandler:
 
         new_context_block = generate_context_block(vote_df, obj_id)
         blocks[idx] = new_context_block
-
+        
         # Update the Slack message
         client.chat_update(
             channel=body['channel']['id'],
             ts=body['message']['ts'],
             blocks=blocks,
-            text="Fallback text"
+            text=f"Source {obj_id} has been updated."
         )
 
     def record_vote(self, vote, obj_id, user_id, user_name, filter_name, timestamp):
@@ -498,6 +575,23 @@ class SlackVoteHandler:
 
     def start(self, host="0.0.0.0", port=443):
         self.flask_app.run(host=host, port=port, ssl_context=('/root/cert.pem', '/root/key.pem'))
+        
+        
+        
+class YSESlackPoster(SlackPoster):
+    def __init__(self, loci_df, filt_meta, save_prefix):
+        '''
+        Reformats YSE information for Slack posting.
+
+        Parameters
+        ----------
+        loci_df: pd.DataFrame
+            Stores extracted locus features to display with Slack bot
+        '''
+        super().__init__(loci_df, filt_meta, save_prefix)
+        self._url_base = 'https://ziggy.ucolick.org/yse/transient_detail/'
+            
+            
 
 if __name__ == "__main__":
     slack_vote_handler = SlackVoteHandler()
