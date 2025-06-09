@@ -73,7 +73,59 @@ def yse_quality_check(ts):
                 good_band1 = True
             else:
                 good_band2 = True
+            continue # don't do variability checks if < 5 points
 
+        # first variability cut
+        if np.ptp(sub_ts['ant_mag']) < 3 * sub_ts['ant_magerr'].mean():
+            continue
+
+        # second variability cut
+        if sub_ts['ant_mag'].std() < sub_ts['ant_magerr'].mean():
+            continue
+            
+        # third variability cut
+        if np.ptp(sub_ts['ant_mag']) < 0.5: # < 0.5 mag spread
+            return False
+            
+        if not good_band1:
+            good_band1 = True
+        else:
+            good_band2 = True
+
+    return (good_band1 and good_band2)
+
+
+def atlas_quality_check(ts):
+    """Same as YSE but without the duration check."""        
+    if len(ts['ant_passband'].unique()) < 2: # at least 1 point in each band
+        return False
+
+    # check enough datapoints
+    times = ts.ant_mjd
+    rounded_times = times.round().unique()
+    if len(rounded_times) < 3:
+        return False
+    
+    # require 2 good bands
+    good_band1 = False
+    good_band2 = False
+
+    for b in ts['ant_passband'].unique():
+
+        sub_ts = ts.loc[ts['ant_passband'] == b,:]
+
+        if len(sub_ts) < 2:
+            continue
+
+        # cut even when fewer points
+        if np.ptp(sub_ts['ant_mag']) < 0.2: # < 0.5 mag spread
+            continue
+
+        if len(sub_ts) < 5:
+            if not good_band1:
+                good_band1 = True
+            else:
+                good_band2 = True
             continue # don't do variability checks if < 5 points
 
         # first variability cut

@@ -408,28 +408,48 @@ class ANTARESRanker:
         return full_locus_df
     
     
-    def associate_sample_prost(self, df, priors, likelis):
+    def associate_sample_prost(self, df, with_redshift=False):
         max_size = 40 # only associate 10 at a time or it freezes
         list_df = [df[i:i + max_size] for i in range(0, len(df), max_size)]
         merged_hosts = []
 
         t = time.time()        
         for i, df_i in enumerate(list_df):
+            merged_hosts_i = None
             for _ in range(5):
                 try:
-                    merged_hosts_i = associate_sample(
-                        df_i,
-                        priors=priors,
-                        likes=likelis,
-                        catalogs=['glade', 'decals',],
-                        parallel=False,
-                        verbose=0,
-                        save=False,
-                        progress_bar=False,
-                        cat_cols=True,
-                        name_col='name',
-                        coord_cols=('ra', 'dec'),
-                    )
+                    if with_redshift:
+                        merged_hosts_i = associate_sample(
+                            df_i,
+                            priors=self.priors_z,
+                            likes=self.likes_z,
+                            catalogs=['glade', 'decals',],
+                            parallel=False,
+                            verbose=0,
+                            save=False,
+                            progress_bar=False,
+                            cat_cols=True,
+                            name_col='name',
+                            coord_cols=('ra', 'dec'),
+                            redshift_col='tns_redshift',
+                        )
+                    else:
+                        merged_hosts_i = associate_sample(
+                            df_i,
+                            priors=self.priors_noz,
+                            likes=self.likes_noz,
+                            catalogs=['glade', 'decals',],
+                            parallel=False,
+                            verbose=0,
+                            save=False,
+                            progress_bar=False,
+                            cat_cols=True,
+                            name_col='name',
+                            coord_cols=('ra', 'dec'),
+                        )
+                    # add back in df_i without hosts
+                    df_remaining_i = df_i.loc[~df_i.name.isin(merged_hosts_i.name)]
+                    merged_hosts_i = pd.concat([merged_hosts_i, df_remaining_i], ignore_index=True)
                     break
                 except:
                     continue
@@ -485,29 +505,17 @@ class ANTARESRanker:
                 noz_mask = df.tns_redshift.isna()
 
                 if len(df[noz_mask]) == 0: # all redshift associated
-                    merged_hosts = self.associate_sample_prost(
-                        df,
-                        self.priors_z,
-                        self.likes_z,
-                    )
+                    merged_hosts = self.associate_sample_prost(df, with_redshift=True)
 
                 elif len(df[~noz_mask]) == 0: # no redshifts
-                    merged_hosts = self.associate_sample_prost(
-                        df,
-                        self.priors_noz,
-                        self.likes_noz,
-                    )
+                    merged_hosts = self.associate_sample_prost(df, with_redshift=False)
 
                 else:
                     hosts_z = self.associate_sample_prost(
-                        df[~noz_mask],
-                        self.priors_z,
-                        self.likes_z,
+                        df[~noz_mask], with_redshift=True
                     )
                     hosts_noz = self.associate_sample_prost(
-                        df[noz_mask],
-                        self.priors_noz,
-                        self.likes_noz,
+                        df[noz_mask], with_redshift=False
                     )
                     merged_hosts = pd.concat([hosts_z, hosts_noz], ignore_index=True)
 

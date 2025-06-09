@@ -119,8 +119,6 @@ class SuperphotPlusZTF(dk.Filter):
         )
         import dustmaps.sfd
         dustmaps.sfd.fetch()
-        from dustmaps.sfd import SFDQuery
-        self.dustmap = SFDQuery()
         
         # generate sampling priors
         self.priors = SuperphotPrior.load(
@@ -187,6 +185,11 @@ class SuperphotPlusZTF(dk.Filter):
             'ant_passband': 'filter'
         }, inplace=True)
 
+        ts = ts.loc[ts['filter'].isin(['R', 'g', 'ATLAS_o', 'ATLAS_c'])]
+
+        ts.loc[ts['filter'] == 'ATLAS_o', 'filter'] = 'R' # basically the same
+        ts.loc[ts['filter'] == 'ATLAS_c', 'filter'] = 'g' # basically the same
+
         ts['filt_center'] = np.where(
             ts['filter'] == 'R',
             6366.38, 4746.48
@@ -252,7 +255,11 @@ class SuperphotPlusZTF(dk.Filter):
             return event_dict
         
         # removes rows with nan values
-        ts.dropna(inplace=True, axis=0)
+        ts.dropna(inplace=True, axis=0, ignore_index=True)
+
+        if 'ant_ra' not in ts.columns:
+            print(ts)
+            print(ts.columns)
 
         if ts['ant_ra'].std() > 0.5 / 3600.: # arcsec
             event_dict['superphot_plus_valid'] = 0
@@ -263,9 +270,6 @@ class SuperphotPlusZTF(dk.Filter):
             return event_dict # marked as variable star or AGN
         
         ts.drop(columns=['ant_ra', 'ant_dec'], inplace=True)
-
-        # drops i-band data
-        ts = ts[ts['ant_passband'] != 'i']
 
         phot = None
         phot = self.generate_antares_phot(ts)

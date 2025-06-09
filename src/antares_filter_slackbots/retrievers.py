@@ -5,6 +5,7 @@ import requests
 from requests.auth import HTTPBasicAuth
 from pathlib import Path
 import multiprocessing as mp
+import zipfile
 
 import json
 import datetime
@@ -19,12 +20,16 @@ from astropy.cosmology import Planck15  # pylint: disable=no-name-in-module
 import pandas as pd
 import antares_client
 from alerce.core import Alerce
+from snapi import Transient
+from snapi.query_agents import TNSQueryAgent, ATLASQueryAgent
 from iinuclear.utils import get_galaxy_center, get_data, check_nuclear
 
 from antares_filter_slackbots.antares_ranker import RankingFilter
 from antares_filter_slackbots.slack_formatters import YSESlackPoster
-from antares_filter_slackbots.quality_filters import standard_quality_check, yse_quality_check, relaxed_quality_check
-from antares_filter_slackbots.auth import login_ysepz, password_ysepz
+from antares_filter_slackbots.quality_filters import (
+    standard_quality_check, yse_quality_check, relaxed_quality_check, atlas_quality_check
+)
+from antares_filter_slackbots.auth import login_ysepz, password_ysepz, tns_id, tns_name, tns_key
 
 
 class Retriever:
@@ -762,6 +767,7 @@ class TestANTARESRetriever(RelaxedANTARESRetriever):
         out1, out2 = self.process_query_results(loci, filt)
         return out1, out2
 
+
 class TNSRetriever(Retriever):
     """Grabs all new TNS events without ZTF names, adds ATLAS forced photometry (if possible),
     and applies quality cuts.
@@ -781,126 +787,149 @@ class TNSRetriever(Retriever):
             os.path.dirname(
                 os.path.dirname(__file__)
             ) # src
-        ), "data", "yse")
+        ), "data", "tns")
+
+        self._data_path = os.path.join(self.save_prefix, "tmp_retrieval.csv")
         os.makedirs(self.save_prefix, exist_ok=True)
+
+        self._ignore_groups = [
+            "ZTF",
+            "ALeRCE",
+            "ANTARES",
+            "YSE",
+        ]
         
-        self._auth = HTTPBasicAuth(login_ysepz, password_ysepz)
+        self._tns_bot_id = tns_id
+        self._tns_api_key = tns_key
+        self._tns_bot_name = tns_name
+
+        self._tns_path_prefix = "https://www.wis-tns.org/system/files/tns_public_objects/tns_public_objects"
+        self._agent = TNSQueryAgent()
+        self._atlas_agent = ATLASQueryAgent()
         
         
     def quality_check(self, ts):
-        return yse_quality_check(ts)
+        return relaxed_quality_check(ts)
         
+    
+    def retrieve_all_names(self):
+        """Retrieve all names for events modified in 
+        last lookback_days days."""
+        earliest_mjd = self._mjd - self._lookback
+        latest_mjd = self._mjd
+        all_mjds = np.arange(earliest_mjd, latest_mjd+1., 1.)
+
+        all_names = []
+        for mjd in all_mjds:
+            t = Time(mjd, format='mjd')
+            datestr = t.strftime('%Y%m%d')
+            print(datestr)
+            os_prompt = f'''curl -X POST -H 'user-agent: tns_marker{{"tns_id":{self._tns_bot_id},'''
+            os_prompt += f'''"type": "bot", "name":"{self._tns_bot_name}"}}' -d '''
+            os_prompt += f'''"api_key={self._tns_api_key}" '''
+            os_prompt += f'''{self._tns_path_prefix}_{datestr}.csv.zip > {self._data_path}.zip'''
+            os.system(os_prompt)
+
+            try:
+                # unzip the resulting file
+                with zipfile.ZipFile(f"{self._data_path}.zip", 'r') as zip_ref:
+                    zip_ref.extractall(os.path.join(self.save_prefix, "tmp"))
+                tmp_path = os.path.join(
+                    self.save_prefix, f'tmp/tns_public_objects_{datestr}.csv'
+                )
+                os.rename(tmp_path, self._data_path)
+                os.remove(f"{self._data_path}.zip")
+
+                # weird extra top row
+                tmp_df = pd.read_csv(self._data_path, header=1)
+                filtered_names = tmp_df.loc[~tmp_df.reporting_group.isin(self._ignore_groups), 'name']
+                all_names.extend(filtered_names)
+                os.remove(self._data_path)
+            except:
+                continue
+
+        return list(set(all_names))
+    
         
-    def retrieve_yse_photometry(self, transient_name):
+    def retrieve_tns_info(self, transient_name):
         """Retrieve YSE photometry for a given transient name.
         """
-        url = f'https://ziggy.ucolick.org/yse/download_photometry/{transient_name}'
-        phot_data = requests.get(url, auth=self._auth).content
-        try:
-            df = pd.read_table(BytesIO(phot_data), sep='\s+', comment='#')
-        except:
+        transient = Transient(iid=transient_name)
+        results, success = self._agent.query_transient(transient)
+        if success:
+            for r in results:
+                rdict = r.to_dict()
+                rdict['spectra'] = []
+                transient.ingest_query_info(rdict)
+
+        if (transient.photometry is None) or (len(transient.photometry.detections.mag.dropna()) == 0):
+            min_mjd = Time.now().mjd - 200. # 200 day from now
+            try:
+                atlas_results, success = self._atlas_agent.query_transient(transient, min_mjd=min_mjd)
+            except:
+                success = False
+            if success:
+                for r in atlas_results:
+                    rdict = r.to_dict()
+                    rdict['spectra'] = []
+                    transient.ingest_query_info(rdict)
+        else:
+            peak_mag = transient.photometry.detections.mag.dropna().min()
+            earliest_time = np.min(transient.photometry.detections.index)
+            if peak_mag < 20.0: # then add ATLAS data (5-sig is 19.7, so a little dimmer for lower SNR)
+                min_mjd = Time(earliest_time).mjd - 200. # 200 day buffer for baseline calculation
+                try:
+                    atlas_results, success = self._atlas_agent.query_transient(transient, min_mjd=min_mjd)
+                except:
+                    success = False
+                if success:
+                    for r in atlas_results:
+                        rdict = r.to_dict()
+                        rdict['spectra'] = []
+                        transient.ingest_query_info(rdict)
+        if transient.photometry is None:
             return None
-        ts = df[['MJD', 'FLT', 'MAG', 'MAGERR']]
+        df = transient.photometry.detections
+        df['ant_mjd'] = Time(df.index).mjd
+        ts = df[['ant_mjd', 'mag', 'mag_error', 'filter']]
         ts.rename(
             columns={
-                'MJD': 'ant_mjd',
-                'MAG': 'ant_mag',
-                'MAGERR': 'ant_magerr',
-                'FLT': 'ant_passband',
+                'mag': 'ant_mag',
+                'mag_error': 'ant_magerr',
+                'filter': 'ant_passband',
             },
             inplace=True
         )
         # if magerr == 5.0 or is negative, not a valid datapoint
-        mask = (ts['ant_magerr'] == 5.0) | (ts['ant_magerr'] <= 0.0)
+        mask = (ts['ant_magerr'] >= 5.0) | (ts['ant_magerr'] <= 0.0)
         ts = ts.loc[~mask]
         # removes rows with nan values (aka upper limits)
         ts.dropna(inplace=True, axis=0, ignore_index=True)
-        return ts
-    
-    
-    def query_all_yse_recent(self):
-        """Query all YSE transients with last detection in a certain time range."""
-        updated_transients = set()
-        filt_date_oldest = (
-            datetime.datetime.utcnow()-datetime.timedelta(200.)
-        ).replace(microsecond=0).isoformat() + "Z"
-        filt_date_newest = (
-            datetime.datetime.utcnow()-datetime.timedelta(self._lookback)
-        ).replace(microsecond=0).isoformat() + "Z"
-            
-        # get transients within that range
-        transient_url = os.path.join(
-            self._base_url,
-            f"transients/?created_date_gte={filt_date_oldest}"
-        )
-        transient_url += "&tag_in=YSE&limit=10_000"
-        transient_url += f"&modified_date_gte={filt_date_newest}"
 
-        response = requests.get(transient_url, auth=self._auth).json()
-        try:
-            transients = response['results']
-        except:
-            return []
+        tns_name = transient_name
+        spec_class = transient.spec_class
+        redshift = transient.redshift
+        coord = transient.coordinates
+        ra = coord.ra.to(u.deg).value
+        dec = coord.dec.to(u.deg).value
 
-        transient_names = []
+        ts['ant_ra'] = ra
+        ts['ant_dec'] = dec
 
-        for t in transients:
-            if self._yse_tag not in t['tags']:
-                continue
-            if self.parse_modified_mjd(t['modified_date']) < self._mjd - self._lookback:      
-                print(t['modified_date'])
-                continue
-            if t['status'] in self._ignore_status:
-                continue
-            if t["TNS_spec_class"] == 'SN Ia':
-                continue
-
-            transient_names.append(t['name'])
-            
-        print(len(transient_names))
-
-        #updated_transients.update(transient_names)
-            
-        return transient_names
-    
-    
-    def parse_modified_mjd(self, date_str):
-        """Extract MJD from modified_date."""
-        t = Time(date_str, format='isot')
-        return t.mjd
+        return ts, tns_name, spec_class, redshift, ra, dec
     
     
     def brightest_time(self, ts):
         """Find brightest time."""
         bright_idx = (ts['ant_mag'] + ts['ant_magerr']).idxmin()
         return ts.loc[bright_idx, 'ant_mjd']
-    
-    
-    def get_tns_info(self, transient_name):
-        """Get TNS info from transient (plus RA and DEC)."""
-        transient_url = os.path.join(
-            self._base_url, f"transients/?name={transient_name}"
-        )
-        transient = requests.get(transient_url, auth=self._auth).json()['results'][0]
-        spec_url = transient['best_spec_class']
-        
-        if spec_url is not None:
-            spec_class = requests.get(spec_url, auth=self._auth).json()['name']
-        else:
-            spec_class = None
-            
-        if "YSE" in transient['name']:
-            tns_name = None
-        else:
-            tns_name = transient['name']
-            
-        return tns_name, spec_class, transient['redshift'], transient['ra'], transient['dec']
-    
+
     
     def retrieve_candidates(self, filt, max_num):
         """Main loop to retrieve YSE transients from 
         the night, get light curves, quality check, and return df.
         """
+        filt.setup()
         self.check_watch()
         processed_dicts = []
         
@@ -909,28 +938,24 @@ class TNSRetriever(Retriever):
         else:
             full_table = None
             
-        nightly_transients = self.query_all_yse_recent()
+        nightly_transients = self.retrieve_all_names()
         ts_dict = {}
 
         for i, transient in enumerate(nightly_transients):
-            
             if i % 10 == 0:
                 print(f"Pre-processed {i} transients...")
                                  
-            ts = self.retrieve_yse_photometry(transient)
-            if ts is None:
+            out = self.retrieve_tns_info(transient)
+            if out is None:
                 continue
-                
+
+            ts, tns_name, tns_cls, tns_redshift, ra, dec = out
+                            
             detections = ts.loc[ts['ant_magerr'] < 0.362]
-            
-            if self._mjd - detections['ant_mjd'].max() > self._lookback:
-                continue
-                
+
             if not self.quality_check(detections):
                 continue
 
-            tns_name, tns_cls, tns_redshift, ra, dec = self.get_tns_info(transient)
-                                                
             if (full_table is not None) and (transient in full_table['name'].to_numpy()):
                 locus_dict = full_table.loc[
                     full_table['name'] == transient,
@@ -960,7 +985,9 @@ class TNSRetriever(Retriever):
                 
             locus_dict['tns_class'] = tns_cls
             locus_dict['tns_redshift'] = tns_redshift
-            locus_dict['brightest_alert_magnitude'] =(detections['ant_mag'] + detections['ant_magerr']).min()
+            locus_dict['brightest_alert_magnitude'] = (detections['ant_mag'] + detections['ant_magerr']).min()
+            locus_dict['oldest_alert_observation_time'] = detections.ant_mjd.min()
+            locus_dict['newest_alert_observation_time'] = detections.ant_mjd.max()
             locus_dict['peak_phase'] = self._mjd - self.brightest_time(detections)
             """
             if filt._filt is not None:
@@ -968,7 +995,6 @@ class TNSRetriever(Retriever):
                     if (p not in locus_dict) and (p not in self.host_properties):
                         locus_dict[p] = locus.properties[p]
             """
-                
             processed_dicts.append(locus_dict)
             
         if len(processed_dicts) == 0:
@@ -976,6 +1002,12 @@ class TNSRetriever(Retriever):
             
         locus_df = pd.DataFrame.from_records(processed_dicts)
         return locus_df, ts_dict
+    
+
+class ATLASRetriever(TNSRetriever):
+    def quality_check(self, ts):
+        return atlas_quality_check(ts)
+
 
 
 if __name__ == "__main__":
