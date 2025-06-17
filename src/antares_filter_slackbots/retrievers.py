@@ -6,6 +6,7 @@ from requests.auth import HTTPBasicAuth
 from pathlib import Path
 import multiprocessing as mp
 import zipfile
+import time
 
 import json
 import datetime
@@ -22,7 +23,6 @@ import antares_client
 from alerce.core import Alerce
 from snapi import Transient
 from snapi.query_agents import TNSQueryAgent, ATLASQueryAgent
-from iinuclear.utils import get_galaxy_center, get_data, check_nuclear
 
 from antares_filter_slackbots.antares_ranker import RankingFilter
 from antares_filter_slackbots.slack_formatters import YSESlackPoster
@@ -52,24 +52,6 @@ class Retriever:
         """Update current time, in MJD.
         """
         self._mjd = Time.now().mjd
-        
-        
-    def is_it_nuclear(self, ra, dec):
-        """Applies isitnuclear package to determine
-        whether loci are likely nuclear.
-        """
-        coord = (ra, dec)
-        ras, decs, ztf_name, iau_name, catalog_result, _, _ = get_data(*coord, save_all=False)
-        if (catalog_result is not None) and (len(catalog_result) > 0):
-            ra_galaxy, dec_galaxy, error_arcsec = get_galaxy_center(catalog_result)
-            _, _, nuclear_bool = check_nuclear(
-                ras, decs, ra_galaxy, dec_galaxy, error_arcsec,
-                p_threshold=0.05
-            )
-            if (nuclear_bool is None) or np.isnan(nuclear_bool):
-                return False
-            return nuclear_bool
-        return False
         
         
         
@@ -198,11 +180,12 @@ class ANTARESRetriever(Retriever):
         if 'nuclear' not in locus_dict: # not already saved
             if not self.quality_check(ts):
                 return None
+            locus_dict['nuclear'] = None
 
-            nuclear_flag = self.is_it_nuclear(locus_dict['ra'], locus_dict['dec'])
-            locus_dict['nuclear'] = nuclear_flag
-
-        new_lc = self.add_alerce_phot(ts, properties['ztf_object_id'])
+        try:
+            new_lc = self.add_alerce_phot(ts, properties['ztf_object_id'])
+        except:
+            new_lc = ts
 
         # 4) Extract TNS information
         if 'tns_public_objects' in catalog_objects:
@@ -249,53 +232,71 @@ class ANTARESRetriever(Retriever):
         for i, locus in enumerate(loci):
             if i % 100 == 0:
                 print(f"Processed {i} loci...")
-
-            # 1) Check if locus in full_table
-            if full_table is not None and (locus.locus_id in full_table['name'].to_numpy()):
-                row = full_table.loc[full_table['name'] == locus.locus_id, ['name', 'ra', 'dec', 'nuclear']].iloc[0]
-                locus_dict = row.to_dict()
-            else:
-                # 2) Check star catalog
-                if not self.star_catalog_check(locus):
-                    continue
-
-                locus_dict = {
-                    'name': locus.locus_id,
-                    'ra': locus.ra,
-                    'dec': locus.dec,
-                }
-
+                
             try:
-                ts = locus.lightcurve[[
-                    'ant_mjd', 'ant_mag', 'ant_magerr', 'ant_passband', 'ant_ra', 'ant_dec'
-                ]].to_pandas()
-            except:
-                ts = locus.lightcurve[[
-                    'ant_mjd', 'ant_mag', 'ant_magerr', 'ant_passband', 'ant_ra', 'ant_dec'
-                ]]
-            ts.dropna(inplace=True, axis=0, ignore_index=True)
+                # 1) Check if locus in full_table
+                if full_table is not None and (locus.locus_id in full_table['name'].to_numpy()):
+                    row = full_table.loc[full_table['name'] == locus.locus_id, ['name', 'ra', 'dec', 'nuclear']].iloc[0]
+                    locus_dict = row.to_dict()
+                else:
+                    # 2) Check star catalog
+                    if not self.star_catalog_check(locus):
+                        continue
 
+                    locus_dict = {
+                        'name': locus.locus_id,
+                        'ra': locus.ra,
+                        'dec': locus.dec,
+                    }
+
+                try:
+                    ts = locus.lightcurve[[
+                        'ant_mjd', 'ant_mag', 'ant_magerr', 'ant_passband', 'ant_ra', 'ant_dec'
+                    ]].to_pandas()
+
+                except:
+                    ts = locus.lightcurve[[
+                        'ant_mjd', 'ant_mag', 'ant_magerr', 'ant_passband', 'ant_ra', 'ant_dec'
+                    ]]
+
+            except:
+                continue
+                        
+            ts.dropna(inplace=True, axis=0, ignore_index=True)
             worker_args.append((locus_dict, ts, locus.properties, locus.catalog_objects, filt._filt.input_properties))
 
         # 4) Use 'spawn' start method to avoid fork issues with JAX
-        ctx = mp.get_context("spawn")
-        with ctx.Pool(processes=8) as pool:
-            ts_dict = {}
-            processed_dicts = []
+        ts_dict = {}
+        processed_dicts = []
+        parallelize = True # works better not on a distributed cluster
+            
+        if parallelize:
+            ctx = mp.get_context("spawn")
+            with ctx.Pool(processes=10) as pool:
+                # Use imap, which yields results one by one in order:
+                for i, out in enumerate(pool.imap_unordered(self._process_single_locus, worker_args), start=1):
+                    if i % 10 == 0 or i == len(worker_args):
+                        print(f"  → main: completed {i}/{len(worker_args)} loci")
 
-            # Use imap, which yields results one by one in order:
-            for i, out in enumerate(pool.imap(self._process_single_locus, worker_args), start=1):
-                # Print progress every 50 or 100 loci:
+                    if out is None:
+                        continue
+
+                    locus_id, new_lc, locus_dict = out
+                    ts_dict[locus_id] = new_lc
+                    processed_dicts.append(locus_dict)
+        
+        else:
+            for i, w in enumerate(worker_args):
                 if i % 10 == 0 or i == len(worker_args):
                     print(f"  → main: completed {i}/{len(worker_args)} loci")
-
+                out = self._process_single_locus(w)
                 if out is None:
                     continue
 
                 locus_id, new_lc, locus_dict = out
                 ts_dict[locus_id] = new_lc
                 processed_dicts.append(locus_dict)
-
+                
         if len(processed_dicts) == 0:
             return None, None
             
@@ -528,13 +529,11 @@ class YSERetriever(Retriever):
                 
             else:
                 # Is it nuclear?
-                nuclear_flag = self.is_it_nuclear(ra, dec)
-
                 locus_dict = {
                     'name': transient,
                     'ra': ra,
                     'dec': dec,
-                    'nuclear': nuclear_flag,
+                    'nuclear': None,
                 }
                 
             ts_dict[transient] = detections
@@ -665,7 +664,7 @@ class ArchivalYSERetriever(YSERetriever):
                 
             else:
                 # Is it nuclear?
-                nuclear_flag = self.is_it_nuclear(ra, dec)
+                nuclear_flag = None
 
                 locus_dict = {
                     'name': transient,
@@ -855,12 +854,24 @@ class TNSRetriever(Retriever):
         """Retrieve YSE photometry for a given transient name.
         """
         transient = Transient(iid=transient_name)
-        results, success = self._agent.query_transient(transient)
+        ntries = 0
+        success = False
+        while (not success) and (ntries < 3):
+            try:
+                results, success = self._agent.query_transient(transient)
+            except:
+                success = False
+            if not success:
+                time.sleep(30.)
+            ntries += 1
+            
         if success:
             for r in results:
                 rdict = r.to_dict()
                 rdict['spectra'] = []
                 transient.ingest_query_info(rdict)
+        else:
+            return None
 
         if (transient.photometry is None) or (len(transient.photometry.detections.mag.dropna()) == 0):
             min_mjd = Time.now().mjd - 200. # 200 day from now
@@ -873,6 +884,7 @@ class TNSRetriever(Retriever):
                     rdict = r.to_dict()
                     rdict['spectra'] = []
                     transient.ingest_query_info(rdict)
+                    
         else:
             peak_mag = transient.photometry.detections.mag.dropna().min()
             earliest_time = np.min(transient.photometry.detections.index)
@@ -964,7 +976,7 @@ class TNSRetriever(Retriever):
                 
             else:
                 # Is it nuclear?
-                nuclear_flag = self.is_it_nuclear(ra, dec)
+                nuclear_flag = None
 
                 locus_dict = {
                     'name': transient,

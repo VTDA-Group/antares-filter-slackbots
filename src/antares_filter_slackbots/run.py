@@ -19,7 +19,6 @@ def all_current_filters():
     tns_retriever = TNSRetriever(2.0)
     atlas_retriever = ATLASRetriever(2.0)
     relaxed_ant_retriever = RelaxedANTARESRetriever(1.0)
-
     
     current_time = Time.now().mjd
     nuclear = RankingFilter(

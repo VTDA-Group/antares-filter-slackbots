@@ -11,6 +11,12 @@ def standard_quality_check(ts):
     rounded_times = times.round().unique()
     if len(rounded_times) < 3:
         return False
+    
+    if ts['ant_ra'].std() > 0.5 / 3600.: # arcsec
+        return False
+
+    if ts['ant_dec'].std() > 0.5 / 3600.: # arcsec
+        return False
 
     for b in ts['ant_passband'].unique():
 

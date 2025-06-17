@@ -1,4 +1,4 @@
-import antares.devkit as dk
+from devkit2_poc.models import BaseFilter
 import numpy as np
 import os
 from astropy.coordinates import SkyCoord
@@ -13,7 +13,7 @@ from superphot_plus.priors import SuperphotPrior
 from superphot_plus.model import SuperphotLightGBM
 from snapi import Photometry, Transient
 
-class SuperphotPlusZTF(dk.Filter):
+class SuperphotPlusZTF(BaseFilter):
     NAME = "Superphot+ Supernovae Classification for ZTF"
     ERROR_SLACK_CHANNEL = "U03QP2KEK1V"  # Put your Slack user ID here
     INPUT_LOCUS_PROPERTIES = [
@@ -237,7 +237,7 @@ class SuperphotPlusZTF(dk.Filter):
         return probs.idxmax(), probs.max(), ia_prob
         
     
-    def run(self, event_dict, ts):
+    def _run(self, event_dict, ts):
         """
         Runs a filter that fits all transients tagged with supernovae-like properties to the model
         described by de Soto et al, 2024. Saves the median model parameters found using SVI or nested sampling

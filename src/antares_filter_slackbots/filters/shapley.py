@@ -1,4 +1,4 @@
-import antares.devkit as dk
+from devkit2_poc.models import BaseFilter
 import os
 import requests
 import warnings
@@ -11,9 +11,10 @@ import shap
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from slack_sdk.errors import SlackApiError
 
-from ..auth import toku
-from ..slack_requests import setup_client
+from ..auth import toku, user_toku
+from ..slack_requests import setup_client, setup_user_client
 
 def dict_merge(dict_list):
     dict1 = dict_list[0]
@@ -21,7 +22,7 @@ def dict_merge(dict_list):
         dict1.update(dict)
     return(dict1)
 
-class ShapleyPlotLAISS(dk.Filter):
+class ShapleyPlotLAISS(BaseFilter):
     NAME = "Shapley Plot Generator for LAISS"
     ERROR_SLACK_CHANNEL = "U03QP2KEK1V"  # Put your Slack user ID here
     INPUT_LOCUS_PROPERTIES = []
@@ -82,6 +83,7 @@ class ShapleyPlotLAISS(dk.Filter):
 
         self.channel_id = "C078CJZE3K5"
         self._client = setup_client()
+        self._user_client = setup_user_client()
 
         # import RF info
         with open(os.path.join(self.data_dir, 'ad_random_forest.pkl'), 'rb') as f:
@@ -93,7 +95,7 @@ class ShapleyPlotLAISS(dk.Filter):
         self.explainer = shap.TreeExplainer(clf, data=RFdata[self.shapley_features])
 
 
-    def run(self, event_dict, ts):
+    def _run(self, event_dict, ts):
         """
         Function applies to each locus.
         """
@@ -105,11 +107,11 @@ class ShapleyPlotLAISS(dk.Filter):
             except:
                 shap_features[feat] = np.nan
 
-        plotpath, length = self.plot_shap(event_dict['name'], shap_features)
+        plotpath = self.plot_shap(event_dict['name'], shap_features)
         filename = plotpath.split("/")[-1]
-        file_id = self.upload_file(toku, event_dict['name'], plotpath, length)
-        self.make_file_public(toku, file_id)
-        initial_url = self.share_public_link(toku, file_id)
+        file_id = self.upload_and_post(event_dict['name'], plotpath)
+        self.make_file_public(file_id)
+        initial_url = self.share_public_link(file_id)
         final_url = self.format_url(initial_url, filename)
         event_dict["shap_url"] = final_url
         return event_dict
@@ -138,50 +140,34 @@ class ShapleyPlotLAISS(dk.Filter):
             edgecolor=fig.get_edgecolor()
         );
         print(f"File successfully saved at {filepath}.")
-        length = os.path.getsize(filepath)
-        return filepath, length
+        return filepath
 
-    def upload_file(self, token, antares_id, file_path, length):
-        """Upload file to Slack.
-        """
-        response = self._client.files_getUploadURLExternal(
-            filename=file_path,
-            length=length + 16,
-            initial_comment=f"Here is the SHAP plot for {antares_id}",
+    def upload_and_post(self, antares_id, file_path):
+        """Upload and post"""
+        resp = self._user_client.files_upload_v2(
+            channel=self.channel_id,                    # a single string
+            title=os.path.basename(file_path),     # optional title
+            file=file_path,                        # local path to your PNG
+            initial_comment=f"Here’s your SHAP plot for {antares_id}!",
         )
-        
-        upload_url = response.get('upload_url')
-        file_id = response.get('file_id')
-        
-        with open(file_path, 'rb') as f:
-            file_data = f.read()
-            put_response = requests.put(upload_url, data=file_data)
-            print(put_response)
-            
-       # confirm upload
-        response = self._client.files_completeUploadExternal(
-            files=[{'id': file_id,},],
-            channels=self.channel_id,
-        )
-        return file_id
+        # resp["files"][0] now has the file metadata
+        # resp["files"][0]["permalink"] is your deep‑link to the message
+        return resp["files"][0]["id"]
 
-    def make_file_public(self, token, file_id):
+    def make_file_public(self, file_id):
         """Make file publicly accessible by all members.
         """
-        url = "https://slack.com/api/files.sharedPublicURL"
-        headers = {
-            "Authorization": f"Bearer {token}"
-        }
-        data = {
-            'file': file_id
-        }
-        response = requests.put(url, headers=headers, data=data)
-        return response
+        try:
+            share_resp = self._user_client.files_sharedPublicURL(file=file_id)
+        except SlackApiError as e:
+            # If it’s already public, Slack returns "already_public"
+            if e.response["error"] != "already_public":
+                raise
 
-    def share_public_link(self, token, file_id):
+    def share_public_link(self, file_id):
         """Get the public URL from the file response.
         """
-        response = self._client.files_info(file=file_id)
+        response = self._user_client.files_info(file=file_id)
         public_url = response.get('file')['permalink_public']
         return public_url
 

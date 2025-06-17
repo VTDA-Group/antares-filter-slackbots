@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import Any, Optional
 from datetime import datetime, timedelta
 import requests
-import requests_cache
 from requests.auth import HTTPBasicAuth
 
 import numpy as np
@@ -17,13 +16,11 @@ from astropy.cosmology import Planck15  # pylint: disable=no-name-in-module
 from astropy.coordinates import SkyCoord, Angle
 from astro_prost.associate import associate_sample
 from astro_prost.helpers import SnRateAbsmag
-from iinuclear.utils import get_galaxy_center, get_data, check_nuclear
+from iinuclear.utils import check_nuclear
 
 from antares_filter_slackbots.slack_formatters import SlackPoster
 from antares_filter_slackbots.slack_requests import *
 from antares_filter_slackbots.auth import login_ysepz, password_ysepz
-
-import pandas as pd
 
 import warnings
 warnings.filterwarnings('ignore')
@@ -197,7 +194,7 @@ class RankingFilter:
         """Apply filter to locus. Modifies locus in place.
         """
         if self._filt is not None:
-            new_meta_dict = self._filt.run(meta_dict, ts)
+            new_meta_dict = self._filt._run(meta_dict, ts)
             return new_meta_dict
         return meta_dict
 
@@ -248,6 +245,27 @@ class ANTARESRanker:
             'peak_abs_mag',
             'peak_phase',
         ]
+        self._laiss_properties = [
+            "gKronMagCorrected",
+            "gKronRad",
+            "gExtNSigma",
+            "rKronMagCorrected",
+            "rKronRad",
+            "rExtNSigma",
+            "iKronMagCorrected",
+            "iKronRad",
+            "iExtNSigma",
+            "zKronMagCorrected",
+            "zKronRad",
+            "zExtNSigma",
+            "gminusrKronMag",
+            "rminusiKronMag",
+            "iminuszKronMag",
+            "rmomentXX",
+            "rmomentXY",
+            "rmomentYY",
+        ]
+        
         self.get_yse_fields()
         
     
@@ -276,26 +294,6 @@ class ANTARESRanker:
                     f['field_id']
                 ]
             )
-        
-        
-    
-    
-    def is_it_nuclear(self, locus):
-        """Applies isitnuclear package to determine
-        whether loci are likely nuclear.
-        """
-        coord = (locus.ra, locus.dec)
-        ras, decs, ztf_name, iau_name, catalog_result, _, _ = get_data(*coord, save_all=False)
-        if (catalog_result is not None) and len(catalog_result) > 0:
-            ra_galaxy, dec_galaxy, error_arcsec = get_galaxy_center(catalog_result)
-            _, _, nuclear_bool = check_nuclear(
-                ras, decs, ra_galaxy, dec_galaxy, error_arcsec,
-                p_threshold=0.05
-            )
-            if (nuclear_bool is None) or np.isnan(nuclear_bool):
-                return False
-            return nuclear_bool
-        return False
     
     
     def apply_filter_to_df(self, meta_df, ts_dict, filt: RankingFilter):
@@ -409,50 +407,51 @@ class ANTARESRanker:
     
     
     def associate_sample_prost(self, df, with_redshift=False):
-        max_size = 40 # only associate 10 at a time or it freezes
+        max_size = 20 # only associate 10 at a time or it freezes
         list_df = [df[i:i + max_size] for i in range(0, len(df), max_size)]
         merged_hosts = []
-
+        
         t = time.time()        
         for i, df_i in enumerate(list_df):
             merged_hosts_i = None
-            for _ in range(5):
-                try:
-                    if with_redshift:
-                        merged_hosts_i = associate_sample(
-                            df_i,
-                            priors=self.priors_z,
-                            likes=self.likes_z,
-                            catalogs=['glade', 'decals',],
-                            parallel=False,
-                            verbose=0,
-                            save=False,
-                            progress_bar=False,
-                            cat_cols=True,
-                            name_col='name',
-                            coord_cols=('ra', 'dec'),
-                            redshift_col='tns_redshift',
-                        )
-                    else:
-                        merged_hosts_i = associate_sample(
-                            df_i,
-                            priors=self.priors_noz,
-                            likes=self.likes_noz,
-                            catalogs=['glade', 'decals',],
-                            parallel=False,
-                            verbose=0,
-                            save=False,
-                            progress_bar=False,
-                            cat_cols=True,
-                            name_col='name',
-                            coord_cols=('ra', 'dec'),
-                        )
-                    # add back in df_i without hosts
-                    df_remaining_i = df_i.loc[~df_i.name.isin(merged_hosts_i.name)]
-                    merged_hosts_i = pd.concat([merged_hosts_i, df_remaining_i], ignore_index=True)
-                    break
-                except:
-                    continue
+            #try:
+            print("STARTING NOW")
+            if with_redshift:
+                merged_hosts_i = associate_sample(
+                    df_i,
+                    priors=self.priors_z,
+                    likes=self.likes_z,
+                    catalogs=['glade', 'decals',],
+                    parallel=False,
+                    verbose=2,
+                    save=False,
+                    progress_bar=True,
+                    cat_cols=True,
+                    name_col='name',
+                    coord_cols=('ra', 'dec'),
+                    redshift_col='tns_redshift',
+                )
+            else:
+                merged_hosts_i = associate_sample(
+                    df_i,
+                    priors=self.priors_noz,
+                    likes=self.likes_noz,
+                    catalogs=['glade', 'decals',],
+                    parallel=False,
+                    verbose=2,
+                    save=False,
+                    progress_bar=True,
+                    cat_cols=True,
+                    name_col='name',
+                    coord_cols=('ra', 'dec'),
+                )
+            # add back in df_i without hosts
+            df_remaining_i = df_i.loc[~df_i.name.isin(merged_hosts_i.name)]
+            merged_hosts_i = pd.concat([merged_hosts_i, df_remaining_i], ignore_index=True)
+            #break
+            #except:
+            #    continue
+            
             print(len(merged_hosts_i))
             merged_hosts.append(merged_hosts_i)
             del merged_hosts_i
@@ -461,13 +460,34 @@ class ANTARESRanker:
             t = time.time()
             
         merged_hosts_concat = pd.concat(merged_hosts, ignore_index=True)
+                
         return merged_hosts_concat
     
     
-    def add_host_galaxy_info(self, df, retriever):
+    def is_it_nuclear(self, event_dict, ts):
+        """Applies isitnuclear package to determine
+        whether loci are likely nuclear.
+        """
+        coord = (event_dict['ra'], event_dict['dec'])
+        ras = ts['ant_ra']
+        decs = ts['ant_dec']
+        ra_galaxy = event_dict['host_ra']
+        dec_galaxy = event_dict['host_dec']
+        error_arcsec = event_dict['host_offset_std']
+        _, _, _, nuclear_bool = check_nuclear(
+            ras, decs, ra_galaxy, dec_galaxy, error_arcsec,
+            p_threshold=0.05
+        )
+        if (nuclear_bool is None) or np.isnan(nuclear_bool):
+            return False
+        
+        return nuclear_bool
+    
+    def add_host_galaxy_info(self, orig_df, ts_dict, retriever):
         """Retrieve host galaxy info for bunch of loci.
         """
-        print(df)
+        df = orig_df.drop_duplicates(subset=['name'], keep='last')
+        df.loc[df.tns_redshift <= 0.0, 'tns_redshift'] = np.nan
         merged_hosts = None
         
         prost_path = retriever._prost_path
@@ -525,8 +545,17 @@ class ANTARESRanker:
 
             if merged_hosts is None:
                 raise ConnectionError("Could not retrieve host info")
+                
             start_time = time.time()
             print("DONE", len(merged_hosts), time.time() - start_time)
+            
+            no_nuclear = merged_hosts.loc[merged_hosts.nuclear.isna()]
+            for i, row in no_nuclear.iterrows():
+                row_dict = row.to_dict()
+                print(row_dict)
+                nuclear_flag = self.is_it_nuclear(row_dict, ts_dict[row_dict['name']])
+                print(nuclear_flag)
+                merged_hosts.loc[i, 'nuclear'] = nuclear_flag
             
             if 'host_name' not in merged_hosts:
                 merged_hosts.loc[:,[
@@ -590,6 +619,7 @@ class ANTARESRanker:
         merged_df = merged_table.loc[:, [*df.columns,
             'host_name', 'best_cat', 'host_redshift_mean', 'host_offset_mean',
             'host_absmag_mean', 'host_total_posterior', 'high_host_confidence',
+            #*self._laiss_properties,
         ]]
 
         merged_df.rename(columns={
@@ -664,7 +694,7 @@ class ANTARESRanker:
             slack_loci.post_empty(filt.channel)
             return
         
-        host_df = self.add_host_galaxy_info(df, filt.retriever)
+        host_df = self.add_host_galaxy_info(df, ts_dict, filt.retriever)
         if host_df is None:
             slack_loci = SlackPoster(None, {}, filt.save_prefix)
             slack_loci.post_empty(filt.channel)

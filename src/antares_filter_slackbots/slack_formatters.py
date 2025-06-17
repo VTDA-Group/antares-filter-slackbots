@@ -1,12 +1,11 @@
-from astro_ghost.PS1QueryFunctions import geturl
 import numpy as np
 import pandas as pd
 import os
 import re
 import requests
 
+from astropy.table import Table
 from flask import Flask, request
-from werkzeug.middleware.proxy_fix import ProxyFix
 from slack_bolt.adapter.flask import SlackRequestHandler
 
 from antares_filter_slackbots.slack_requests import (
@@ -14,6 +13,35 @@ from antares_filter_slackbots.slack_requests import (
     setup_app,
     setup_client
 )
+
+def geturl(ra, dec, size=240, output_size=None, filters="grizy", format="jpg", color=False, type='stack'):
+    """Get the URL for images in the table. Taken from astro_ghost.
+    """  
+    service = "https://ps1images.stsci.edu/cgi-bin/ps1filenames.py"
+    url_table = ("{service}?ra={ra}&dec={dec}&size={size}&format=fits"
+           "&filters={filters}&type={type}").format(**locals())
+    table = Table.read(url_table, format='ascii')
+    url = ("https://ps1images.stsci.edu/cgi-bin/fitscut.cgi?"
+           "ra={ra}&dec={dec}&size={size}&format={format}").format(**locals())
+    if output_size:
+        url = url + "&output_size={}".format(output_size)
+
+    # sort filters from red to blue
+    flist = ["yzirg".find(x) for x in table['filter']]
+    table = table[np.argsort(flist)]
+    if color:
+        if len(table) > 3:
+            # pick 3 filters
+            table = table[[0,len(table)//2,len(table)-1]]
+        for i, param in enumerate(["red","green","blue"]):
+            url = url + "&{}={}".format(param, table['filename'][i])
+    else:
+        urlbase = url + "&red="
+        url = []
+        for filename in table['filename']:
+            url.append(urlbase+filename)
+    return url
+
 
 def is_link_accessible(url):
     try:
@@ -154,11 +182,7 @@ class SlackPoster:
     def ps1_pic(self, row):
         """Retrive PS1 image url of entry."""
         if row.dec > -30:
-            for _ in range(5): # 5 attempts
-                try:
-                    return geturl(row.ra, row.dec, color=True)
-                except:
-                    continue
+            return geturl(row.ra, row.dec, color=True)
         
         return None
        
