@@ -141,13 +141,13 @@ def all_current_filters():
         groupby_properties={'superphot_plus_class': ('SN IIn', 'SN Ibc', 'SLSN-I',)}
     )
     all_filters = [
-        nuclear,
-        precursor,
-        tns_query,
-        laiss,
-        sp_bright,
-        sp,
-        atlas_query,
+        #nuclear,
+        #precursor,
+        #tns_query,
+        #laiss,
+        #sp_bright,
+        #sp,
+        #atlas_query,
         yse_query,
     ]
     return all_filters
