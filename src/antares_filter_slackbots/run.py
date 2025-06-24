@@ -5,7 +5,10 @@ from pathlib import Path
 from antares_filter_slackbots.antares_ranker import ANTARESRanker, RankingFilter
 from antares_filter_slackbots.filters import SuperphotPlusZTF, ShapleyPlotLAISS, PrecursorEmission
 from antares_filter_slackbots.slack_formatters import SlackPoster
-from antares_filter_slackbots.retrievers import ANTARESRetriever, YSERetriever, RelaxedANTARESRetriever
+from antares_filter_slackbots.retrievers import (
+    ANTARESRetriever, YSERetriever, RelaxedANTARESRetriever,
+    TNSRetriever, ATLASRetriever
+)
 
 def all_current_filters():
     """Where all filters to run are defined.
@@ -13,7 +16,9 @@ def all_current_filters():
     # lookback of 1 day
     ant_retriever = ANTARESRetriever(1.0)
     yse_retriever = YSERetriever(2.0)
-    relaxed_ant_retriever = RelaxedANTARESRetriever(7.0)
+    tns_retriever = TNSRetriever(2.0)
+    atlas_retriever = ATLASRetriever(2.0)
+    relaxed_ant_retriever = RelaxedANTARESRetriever(1.0)
     
     current_time = Time.now().mjd
     nuclear = RankingFilter(
@@ -107,13 +112,43 @@ def all_current_filters():
         "peak_phase",
         ascending=True,
     )
+    tns_query = RankingFilter(
+        "tns-precursor",
+        tns_retriever,
+        PrecursorEmission(),
+        "#precursor-emission",
+        "peak_abs_mag",
+        save_properties = ['duration', 'duration_z0', 'long_lived'],
+        post_filter_tags = ["valid_precursor",],
+        post_filter_properties = {
+            "peak_abs_mag": (-16, -11), "lum_dist": (0., 100.)
+        },
+    )
+    atlas_query = RankingFilter(
+        "query-atlas",
+        atlas_retriever,
+        SuperphotPlusZTF(),
+        "#superphotplus",
+        "superphot_plus_prob",
+        save_properties = [
+            "superphot_plus_class_without_redshift", "superphot_plus_prob_without_redshift",    
+            "superphot_plus_classifier", "superphot_plus_sampler", "superphot_non_Ia_prob",
+        ],
+        post_filter_tags = ["superphot_plus_classified",],
+        post_filter_properties = {
+            "superphot_plus_valid": (1,1), "superphot_plus_prob": (0.5, 1.0), "superphot_non_Ia_prob": (0.8, 1.0)
+        },
+        groupby_properties={'superphot_plus_class': ('SN IIn', 'SN Ibc', 'SLSN-I',)}
+    )
     all_filters = [
-        #nuclear,
+        nuclear,
         precursor,
-        #laiss,
-        #sp_bright,
-        #sp,
-        #yse_query,
+        tns_query,
+        laiss,
+        sp_bright,
+        sp,
+        atlas_query,
+        yse_query,
     ]
     return all_filters
 
@@ -124,11 +159,11 @@ def run():
     
     for filt in all_current_filters():
         for _ in range(3): # three attempts
-            try:
-                ranker.run(filt, 10) # max_num
-                break
-            except:
-                pass
+            #try:
+            ranker.run(filt, 10) # max_num
+            break
+            #except:
+            #    pass
 
 if __name__ == '__main__':
     run()

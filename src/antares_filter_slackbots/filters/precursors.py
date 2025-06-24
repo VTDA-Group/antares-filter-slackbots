@@ -1,4 +1,4 @@
-import antares.devkit as dk
+from devkit2_poc.models import BaseFilter
 import os
 import warnings
 from astropy.cosmology import Planck15 as cosmo
@@ -8,7 +8,7 @@ warnings.filterwarnings("ignore")
 import numpy as np
 
 
-class PrecursorEmission(dk.Filter):
+class PrecursorEmission(BaseFilter):
     NAME = "Precursor emission filter"
     ERROR_SLACK_CHANNEL = "U03QP2KEK1V"  # Put your Slack user ID here
     INPUT_LOCUS_PROPERTIES = []
@@ -71,7 +71,7 @@ class PrecursorEmission(dk.Filter):
         ]
         
 
-    def run(self, event_dict, ts):
+    def _run(self, event_dict, ts):
         """
         Function applies to each locus.
         """

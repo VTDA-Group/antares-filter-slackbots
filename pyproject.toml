@@ -15,7 +15,26 @@ classifiers = [
 ]
 dynamic = ["version"]
 dependencies = [
-    "superphot-plus", 
+    "alerce", # retrievers
+    "antares-client @ git+https://gitlab.com/nsf-noirlab/csdc/antares/client.git", # retrievers
+    "astro-prost @ git+https://github.com/kdesoto-astro/Prost.git",
+    "astropy",
+    "devkit2_poc @ git+https://gitlab.com/nsf-noirlab/csdc/antares/devkit2_poc.git",
+    "django", # retrievers
+    "dustmaps",
+    "dynesty>=2.1.5",
+    "Flask",
+    "iinuclear @ git+https://github.com/gmzsebastian/iinuclear.git",
+    "lightgbm>=4.6.0",
+    "numpy <= 1.26.3",
+    "numpyro",
+    "pandas",
+    "scipy",
+    "shap",
+    "slack-bolt",
+    "slack-sdk",
+    "snapi @ git+https://github.com/kdesoto-astro/snapi.git", # retrievers
+    "superphot-plus @ git+https://github.com/VTDA-Group/superphot-plus.git", # filter
 ]
 
 # On a mac, install optional dependencies with `pip install '.[dev]'` (include the single quotes)

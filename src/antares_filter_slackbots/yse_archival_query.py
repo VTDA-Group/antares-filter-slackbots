@@ -23,15 +23,18 @@ def prune_unknown_yse():
     df, ts_dict = yse_retriever.retrieve_candidates(filt, None)
         
     if df is None:
+        print("NO PREPROCESSED")
         return
 
     host_df = ranker.add_host_galaxy_info(df, yse_retriever)
     if host_df is None:
+        print("NO HOSTS")
         return
 
     final_df = ranker.apply_filter_to_df(host_df, ts_dict, filt)
     
     if final_df is None:
+        print("NO FINAL")
         return
     
     # save to local df
@@ -40,6 +43,7 @@ def prune_unknown_yse():
             os.path.dirname(__file__)
         ) # src
     ), "data", 'archival_yse_candidates.csv')
+    print(save_path)
     final_df.to_csv(save_path)
 
 

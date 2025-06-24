@@ -1,6 +1,6 @@
 import os
-import antares.devkit as dk
 import pandas as pd
+from devkit2_poc.models import DevKitLocus
 
 def generate_alerts_from_file(alerce_fn):
     """Generate alert dictionary from ALeRCE downloaded
@@ -47,8 +47,7 @@ def generate_alerts_from_file(alerce_fn):
 
     
 def generate_locus_from_file(alert_fn):
-    """From file with detections, generate
-    dk.init()
+    """From file with detections, generate locus.
     """
     name, ra, dec, alerts, properties = generate_alerts_from_file(alert_fn)
         
@@ -65,11 +64,11 @@ def generate_locus_from_file(alert_fn):
         'tags': [],
         'watch_list_ids': [],
         'watch_object_ids': [],
-        'catalog_objects': {}, #dk.search_catalogs(ra, dec),
+        'catalog_objects': {},
         'alerts': alerts,
     }
 
-    locus = dk.locus_from_dict(locus_dict)
+    locus = DevKitLocus.model_validate(locus_dict)
     return locus
 
     
