@@ -520,6 +520,8 @@ class YSERetriever(Retriever):
                 continue
 
             tns_name, tns_cls, tns_redshift, ra, dec = self.get_tns_info(transient)
+            detections['ant_ra'] = ra
+            detections['ant_dec'] = dec
                                                 
             if (full_table is not None) and (transient in full_table['name'].to_numpy()):
                 locus_dict = full_table.loc[
@@ -648,13 +650,15 @@ class ArchivalYSERetriever(YSERetriever):
             ts = self.retrieve_yse_photometry(transient)
             if ts is None:
                 continue
-                
+                                
             detections = ts.loc[ts['ant_magerr'] < 0.362]
                 
             if not self.quality_check(detections):
                 continue
 
             tns_name, tns_cls, tns_redshift, ra, dec = self.get_tns_info(transient)
+            detections['ant_ra'] = ra
+            detections['ant_dec'] = dec
                                                 
             if (full_table is not None) and (transient in full_table['name'].to_numpy()):
                 locus_dict = full_table.loc[
@@ -962,8 +966,8 @@ class TNSRetriever(Retriever):
                 continue
 
             ts, tns_name, tns_cls, tns_redshift, ra, dec = out
-            ts['ant_ra'] = ra
-            ts['ant_dec'] = dec
+            ts.loc[:, 'ant_ra'] = ra
+            ts.loc[:, 'ant_dec'] = dec
                             
             detections = ts.loc[ts['ant_magerr'] < 0.362]
 

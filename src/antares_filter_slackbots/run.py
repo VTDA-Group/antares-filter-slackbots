@@ -22,10 +22,10 @@ def all_current_filters():
     
     current_time = Time.now().mjd
     nuclear = RankingFilter(
-        "nuclear-transients",
+        "nuclear_transients",
         ant_retriever,
         PrecursorEmission(),
-        "#nuclear-transients",
+        "#slackbot-test",
         "brightest_alert_magnitude",
         pre_filter_properties = {
             "oldest_alert_observation_time": (current_time-1000., 99_999_999,),
@@ -35,7 +35,7 @@ def all_current_filters():
         post_filter_tags = ["valid_nuclear",],
     )
     precursor = RankingFilter(
-        "precursor-emission",
+        "precursor_emission",
         relaxed_ant_retriever,
         PrecursorEmission(),
         "#precursor-emission",
@@ -66,7 +66,7 @@ def all_current_filters():
         save_properties = ["shap_url", "nuclear"]
     )
     sp_bright = RankingFilter(
-        "superphot-plus-bright",
+        "superphot-plus_bright",
         ant_retriever,
         SuperphotPlusZTF(),
         "#superphot-plus-bright-followup", # change
@@ -88,7 +88,7 @@ def all_current_filters():
         "superphot-plus",
         ant_retriever,
         SuperphotPlusZTF(),
-        "#superphotplus",
+        "slackbot-test", #"#superphotplus",
         "superphot_plus_prob",
         pre_filter_properties = {
             "oldest_alert_observation_time": (current_time-200., 99_999_999,),
@@ -105,7 +105,7 @@ def all_current_filters():
         groupby_properties={'superphot_plus_class': ('SN IIn', 'SN Ibc', 'SLSN-I',)}
     )
     yse_query = RankingFilter(
-        "query-yse",
+        "yse_candidates",
         yse_retriever,
         None,
         "#yse-daily-candidates",
@@ -113,7 +113,7 @@ def all_current_filters():
         ascending=True,
     )
     tns_query = RankingFilter(
-        "tns-precursor",
+        "tns_precursor",
         tns_retriever,
         PrecursorEmission(),
         "#precursor-emission",
@@ -125,7 +125,7 @@ def all_current_filters():
         },
     )
     atlas_query = RankingFilter(
-        "query-atlas",
+        "atlas_superphot-plus",
         atlas_retriever,
         SuperphotPlusZTF(),
         "#superphotplus",
@@ -141,14 +141,14 @@ def all_current_filters():
         groupby_properties={'superphot_plus_class': ('SN IIn', 'SN Ibc', 'SLSN-I',)}
     )
     all_filters = [
-        #nuclear,
-        #precursor,
-        #tns_query,
         #laiss,
+        #tns_query,
         #sp_bright,
-        #sp,
+        sp,
         #atlas_query,
-        yse_query,
+        #yse_query,
+        #precursor,
+        #nuclear,
     ]
     return all_filters
 

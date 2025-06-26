@@ -21,6 +21,7 @@ from iinuclear.utils import check_nuclear
 from antares_filter_slackbots.slack_formatters import SlackPoster
 from antares_filter_slackbots.slack_requests import *
 from antares_filter_slackbots.auth import login_ysepz, password_ysepz
+from antares_filter_slackbots.webpage import create_html_tab
 
 import warnings
 warnings.filterwarnings('ignore')
@@ -552,9 +553,10 @@ class ANTARESRanker:
             no_nuclear = merged_hosts.loc[merged_hosts.nuclear.isna()]
             for i, row in no_nuclear.iterrows():
                 row_dict = row.to_dict()
-                print(row_dict)
-                nuclear_flag = self.is_it_nuclear(row_dict, ts_dict[row_dict['name']])
-                print(nuclear_flag)
+                if 'host_name' in row_dict:
+                    nuclear_flag = self.is_it_nuclear(row_dict, ts_dict[row_dict['name']])
+                else:
+                    nuclear_flag = False
                 merged_hosts.loc[i, 'nuclear'] = nuclear_flag
             
             if 'host_name' not in merged_hosts:
@@ -572,6 +574,7 @@ class ANTARESRanker:
                     'any_posterior',
                     'none_posterior',
                 ]] = pd.NA
+                
             merged_hosts.host_name.mask(merged_hosts.host_name.isna(), merged_hosts.host_objID, inplace=True)
             merged_hosts.host_name.mask(merged_hosts.host_name.eq(""), merged_hosts.host_objID, inplace=True)
             merged_hosts.host_name.mask(merged_hosts.host_name.eq("nan"), merged_hosts.host_objID, inplace=True)
@@ -723,6 +726,7 @@ class ANTARESRanker:
 
         slack_loci = SlackPoster(df_pruned, filt_meta, filt.save_prefix)
         slack_loci.post(filt.channel)
+        create_html_tab(df_pruned, slack_loci)
 
         # save to local df
         self.save_objects(df_pruned, filt.save_prefix)
