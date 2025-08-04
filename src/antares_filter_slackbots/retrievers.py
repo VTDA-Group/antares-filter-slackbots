@@ -962,6 +962,8 @@ class TNSRetriever(Retriever):
                 continue
 
             ts, tns_name, tns_cls, tns_redshift, ra, dec = out
+            ts['ant_ra'] = ra
+            ts['ant_dec'] = dec
                             
             detections = ts.loc[ts['ant_magerr'] < 0.362]
 
