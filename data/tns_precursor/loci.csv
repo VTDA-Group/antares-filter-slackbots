@@ -1,0 +1,2 @@
+name,peak_abs_mag,peak_mag,yse_pz,yse_field,ra,dec,tns_name,tns_redshift,tns_class,host_redshift,host_prob,host_sep_arcsec,best_host_catalog,host_absmag,best_redshift,host_name,high_host_confidence,peak_phase,duration,duration_z0,long_lived,posted_before
+2025sxi,-15.666825074123244,18.920976090534705,<https://ziggy.ucolick.org/yse/transient_detail/2025sxi|*YSE-PZ*>,365.F,67.049335,-7.5442375,2025sxi,,None,0.018598,0.976308552914212,6.046556561506086,decals,-17.578007963307332,0.018598,9906618609961724,True,15.081848320194695,13.751883999997517,13.500796192411057,0,False

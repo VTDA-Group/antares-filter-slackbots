@@ -25,7 +25,7 @@ def all_current_filters():
         "nuclear_transients",
         ant_retriever,
         PrecursorEmission(),
-        "#slackbot-test",
+        "#nuclear-transients",
         "brightest_alert_magnitude",
         pre_filter_properties = {
             "oldest_alert_observation_time": (current_time-1000., 99_999_999,),
@@ -88,7 +88,7 @@ def all_current_filters():
         "superphot-plus",
         ant_retriever,
         SuperphotPlusZTF(),
-        "slackbot-test", #"#superphotplus",
+        "#superphotplus",
         "superphot_plus_prob",
         pre_filter_properties = {
             "oldest_alert_observation_time": (current_time-200., 99_999_999,),
@@ -141,14 +141,14 @@ def all_current_filters():
         groupby_properties={'superphot_plus_class': ('SN IIn', 'SN Ibc', 'SLSN-I',)}
     )
     all_filters = [
-        #laiss,
-        #tns_query,
-        #sp_bright,
+        laiss,
+        tns_query,
+        sp_bright,
         sp,
-        #atlas_query,
-        #yse_query,
-        #precursor,
-        #nuclear,
+        atlas_query,
+        yse_query,
+        precursor,
+        nuclear,
     ]
     return all_filters
 

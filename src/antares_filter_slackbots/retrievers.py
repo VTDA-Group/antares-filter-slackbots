@@ -68,10 +68,8 @@ class ANTARESRetriever(Retriever):
         self._alerce_client = Alerce()
 
         self.var_catalogs = [
-            "gaia_dr3_variability",
             "sdss_stars",
-            "bright_guide_star_cat",
-            "asassn_variable_catalog_v2_20190802",
+            'gaia_edr3_distances_bailer_jones',
             "vsx",
             "linear_ll",
             "veron_agn_qso", # agn/qso
@@ -139,11 +137,14 @@ class ANTARESRetriever(Retriever):
     def star_catalog_check(self, locus):
         """Check whether locus is in star or AGN catalog.
         """
+        if 'bright_guide_star_cat' in locus.catalog_objects:
+            cls = locus.catalog_objects['bright_guide_star_cat'][0]['classification']
+            if int(cls) == 0:
+                return False
         if 'gaia_dr3_gaia_source' in locus.catalog_objects:
             info = locus.catalog_objects['gaia_dr3_gaia_source'][0]
             if (info['parallax'] is not None) and ~np.isnan(info['parallax']):
                 return False
-            
         return True
     
     
@@ -577,15 +578,16 @@ class RelaxedANTARESRetriever(ANTARESRetriever):
         self._prost_path = os.path.join(
             Path(__file__).parent.parent.parent.absolute(), "data/PROST_relaxed.csv"
         )
-        self.var_catalogs = ["bright_guide_star_cat",]
+        self.var_catalogs = []
         
         
     def star_catalog_check(self, locus):
         """Check whether locus is in star or AGN catalog.
         """
         if "bright_guide_star_cat" in locus.catalog_objects:
-            print("CATALOG PRUNE FAILED!")
-            return False
+            cls = locus.catalog_objects['bright_guide_star_cat'][0]['classification']
+            if int(cls) == 0:
+                return False
 
         if 'linear_ll' in locus.catalog_objects:
             info = locus.catalog_objects['linear_ll'][0]
