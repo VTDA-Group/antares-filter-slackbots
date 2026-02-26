@@ -22,6 +22,7 @@ from antares_filter_slackbots.slack_formatters import SlackPoster
 from antares_filter_slackbots.slack_requests import *
 from antares_filter_slackbots.auth import login_ysepz, password_ysepz
 from antares_filter_slackbots.webpage import create_html_tab
+from antares_filter_slackbots.yse_utils import *
 
 import warnings
 warnings.filterwarnings('ignore')
@@ -345,33 +346,9 @@ class ANTARESRanker:
                 'peak_mag': new_dict['brightest_alert_magnitude'],
             }
             
-            tns_name = new_dict['tns_name']
-            if (tns_name is not None) and str(tns_name)[:4].isnumeric():
-                yse_search_url = f"https://ziggy.ucolick.org/yse/api/transients/?name={tns_name}"
-            else:
-                ra_lower = new_dict['ra'] - 0.0001
-                ra_upper = new_dict['ra'] + 0.0001
-                dec_lower = new_dict['dec'] - 0.0001
-                dec_upper = new_dict['dec'] + 0.0001
-                yse_search_url = f"https://ziggy.ucolick.org/yse/api/transients/?ra_gte={ra_lower}"
-                yse_search_url += f"&ra_lte={ra_upper}&dec_gte={dec_lower}&dec_lte={dec_upper}"
-                
-            yse_results = requests.get(yse_search_url, auth=self._auth).json()['results']
-
+            yse_results = search_yse_for_transient(new_dict, self._auth)
+            name = yse_results['name']
             if len(yse_results) > 0:
-                yse_result = yse_results[0]
-                name = yse_result['name']
-                url = yse_result['url']
-
-                yse_result['tags'].append(self._slackbot_tag)
-                yse_result['tags'] = list(set(yse_result['tags']))
-                url = yse_result['url']
-
-                requests.put(
-                    url,
-                    json=yse_result,
-                    auth=self._auth
-                )
                 locus_dict['yse_pz'] = f"<https://ziggy.ucolick.org/yse/transient_detail/{name}|*YSE-PZ*>"
             else:
                 locus_dict['yse_pz'] = None
