@@ -318,9 +318,7 @@ class ANTARESRanker:
                 redshift = event_dict['host_redshift']
             else:
                 redshift = np.nan
-                
-            #redshift = 0.0362 # MANUAL OVERRIDE
-                
+                                
             event_dict['best_redshift'] = redshift
             
             
@@ -540,6 +538,9 @@ class ANTARESRanker:
                     )
                     merged_hosts = pd.concat([hosts_z, hosts_noz], ignore_index=True)
 
+                missing_df = df.loc[~merged_hosts.name.isin(merged_hosts.name)]
+                merged_hosts = pd.concat([merged_hosts, missing_df], ignore_index=True)
+
                 break
                 #except:
                 #    pass
@@ -691,7 +692,7 @@ class ANTARESRanker:
         """Run full cycle of the ANTARESRanker.
         """
         df, ts_dict = filt.retriever.retrieve_candidates(filt, max_num)
-        
+
         if df is None:
             slack_loci = SlackPoster(None, {}, filt.save_prefix)
             slack_loci.post_empty(filt.channel)
@@ -702,8 +703,8 @@ class ANTARESRanker:
             slack_loci = SlackPoster(None, {}, filt.save_prefix)
             slack_loci.post_empty(filt.channel)
             return
-        
-        final_df = self.apply_filter_to_df(host_df, ts_dict, filt)
+
+            
         if final_df is None:
             slack_loci = SlackPoster(None, {}, filt.save_prefix)
             slack_loci.post_empty(filt.channel)
@@ -724,12 +725,15 @@ class ANTARESRanker:
             for v in vals:
                 filt_meta[f'overflow_{v}'] = (len(final_df[final_df[k] == v]) < len(df_pruned[df_pruned[k] == v]))
 
+        # save to local df
+        self.save_objects(df_pruned, filt.save_prefix)
+        
         slack_loci = SlackPoster(df_pruned, filt_meta, filt.save_prefix)
         slack_loci.post(filt.channel)
         create_html_tab(df_pruned, slack_loci)
 
         # save to local df
-        self.save_objects(df_pruned, filt.save_prefix)
+        #self.save_objects(df_pruned, filt.save_prefix)
         return
 
     

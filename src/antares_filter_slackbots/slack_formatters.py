@@ -237,6 +237,9 @@ class SlackPoster:
 
             if len(sub_df.loc[sub_df.Response == 'downvote']) > 1:
                 return []
+            
+            if len(sub_df.loc[sub_df.Response == 'AGN']) > 1:
+                return []
 
         title_link = self._url_base + row.name
         
@@ -273,13 +276,15 @@ class SlackPoster:
             },
         ]
 
-        attachment.append(
-            {
-                "type": "image",
-                "image_url": self.ps1_pic(row),
-                "alt_text": "ps1_image"
-            }
-        )
+        pic = self.ps1_pic(row)
+        if pic is not None:
+            attachment.append(
+                {
+                    "type": "image",
+                    "image_url": pic,
+                    "alt_text": "ps1_image"
+                }
+            )
 
         fields_overview = {
             "type": "section",

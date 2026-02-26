@@ -75,6 +75,39 @@ class ANTARESRetriever(Retriever):
             "veron_agn_qso", # agn/qso
             "milliquas", # qso
         ]
+        self._agent = TNSQueryAgent()
+        #self._agent.update_local_database()
+        
+        
+    def backup_tns_retriever(self, transient_name):
+        """Retrieve TNS info if not on ANTARES for some reason.
+        """
+        transient = Transient(iid=transient_name)
+        ntries = 0
+        success = False
+        while (not success) and (ntries < 3):
+            try:
+                results, success = self._agent.query_transient(transient, local=True)
+            except:
+                success = False
+            if not success:
+                time.sleep(30.)
+            ntries += 1
+            
+        if success:
+            for r in results:
+                rdict = r.to_dict()
+                rdict['spectra'] = []
+                transient.ingest_query_info(rdict)
+        else:
+            return None
+
+
+        spec_class = transient.spec_class
+        redshift = transient.redshift
+        print(spec_class, redshift)
+
+        return spec_class, redshift
         
         
     def add_alerce_phot(self, lc, ztf_name):
@@ -192,10 +225,12 @@ class ANTARESRetriever(Retriever):
         if 'tns_public_objects' in catalog_objects:
             tns = catalog_objects['tns_public_objects'][0]
             tns_name, tns_cls, tns_redshift = tns['name'], tns['type'], tns['redshift']
-            if tns_cls == '':
-                tns_cls = '---'
-            if tns_redshift is None:
-                tns_redshift = np.nan
+            
+            # backup TNS query
+            if (tns_cls is None) or (tns_cls == ''):
+                tns_cls, tns_reshift = self.backup_tns_retriever(tns_name)
+
+
         else:
             tns_name, tns_cls, tns_redshift = '---', '---', np.nan
 
@@ -386,6 +421,7 @@ class YSERetriever(Retriever):
         """Retrieve YSE photometry for a given transient name.
         """
         url = f'https://ziggy.ucolick.org/yse/download_photometry/{transient_name}'
+        #https://ziggy.ucolick.org/yse/download_spectra/2023ixf/
         phot_data = requests.get(url, auth=self._auth).content
         try:
             df = pd.read_table(BytesIO(phot_data), sep='\s+', comment='#')
@@ -1029,6 +1065,275 @@ class ATLASRetriever(TNSRetriever):
         return atlas_quality_check(ts)
 
 
+class LSSTRetriever(ANTARESRetriever):
+    """Retriever class for Rubin's LSST."""
+    def __init__(self, lookback_days=1.):
+        """All URLs go here."""
+        super().__init__(lookback_days)
+        self._prost_path = os.path.join(
+            Path(__file__).parent.parent.parent.absolute(), "data/PROST_LSST.csv"
+        )
+        
+    def quality_check(self, ts):
+        return yse_quality_check(ts)
+
+    def star_catalog_check(self, locus):
+        """Check whether locus is in star or AGN catalog, OR NUCLEAR.
+        Shortcut here: if sep with a galaxy match is < 0.", we skip
+        """
+        coord = cd.SkyCoord(ra=locus.ra * u.deg, dec=locus.dec * u.deg)
+        coord_gal = coord.galactic
+        b = coord_gal.b.to(u.deg).value
+        if np.abs(b) < 20:
+            return False
+            
+        if 'bright_guide_star_cat' in locus.catalog_objects:
+            cls = locus.catalog_objects['bright_guide_star_cat'][0]['classification']
+            if int(cls) == 0:
+                return False
+            decl = locus.catalog_objects['bright_guide_star_cat'][0]['Declination_deg']
+            ra = locus.catalog_objects['bright_guide_star_cat'][0]['RightAsc_deg']
+            coord_match = cd.SkyCoord(ra=ra * u.deg, dec=decl * u.deg)
+            sep = coord.separation(coord_match)
+            if sep.to(u.arcsec).value < 0.2:
+                return False
+                
+        if 'gaia_dr3_gaia_source' in locus.catalog_objects:
+            info = locus.catalog_objects['gaia_dr3_gaia_source'][0]
+            if (info['parallax'] is not None) and ~np.isnan(info['parallax']):
+                return False
+            decl = locus.catalog_objects['gaia_dr3_gaia_source'][0]['dec']
+            ra = locus.catalog_objects['gaia_dr3_gaia_source'][0]['ra']
+            coord_match = cd.SkyCoord(ra=ra * u.deg, dec=decl * u.deg)
+            sep = coord.separation(coord_match)
+            if sep.to(u.arcsec).value < 0.2:
+                return False
+
+        if 'sdss_gals' in locus.catalog_objects:
+            info = locus.catalog_objects['sdss_gals'][0]
+            decl = locus.catalog_objects['sdss_gals'][0]['dec_']
+            ra = locus.catalog_objects['sdss_gals'][0]['ra']
+            coord_match = cd.SkyCoord(ra=ra * u.deg, dec=decl * u.deg)
+            sep = coord.separation(coord_match)
+            if sep.to(u.arcsec).value < 0.2:
+                return False
+
+        return True
+
+    def add_alerce_phot(self, lc, ztf_name):
+        """Add both LSST and ZTF photometry.
+        """
+        combined_lc = lc
+        for survey in ['ztf', 'lsst']:
+            forced_detections = self._alerce_client.query_forced_photometry(
+                ztf_name, format="pandas", survey=survey
+            )
+            forced_detections.dropna(axis=1, inplace=True, ignore_index=True)
+            
+            if len(forced_detections) == 0:
+                return lc
+    
+            alerce_lc = forced_detections[['mjd', 'fid', 'mag', 'e_mag']]
+            alerce_lc['ant_ra'] = lc['ant_ra'].iloc[0]
+            alerce_lc['ant_dec'] = lc['ant_dec'].iloc[0]
+            
+            alerce_lc.loc[alerce_lc.fid == 1, 'fid'] = 'g'
+            alerce_lc.loc[alerce_lc.fid == 2, 'fid'] = 'R'
+            alerce_lc.loc[alerce_lc.fid == 3, 'fid'] = 'i'
+            
+            alerce_lc.rename(
+                columns={
+                    'mjd': 'ant_mjd',
+                    'fid': 'ant_passband',
+                    'mag': 'ant_mag',
+                    'e_mag': 'ant_magerr',
+                },
+                inplace=True
+            )
+            combined_lc = pd.concat([combined_lc, alerce_lc], ignore_index=True)
+            combined_lc.sort_values(by='ant_mjd', inplace=True)
+        return combined_lc
+
+
+    def filter_bogus_alerts(self, locus):
+        num_real = 0
+        mjds = []
+        for alert in locus.alerts:
+            props = alert.properties
+            if props['ant_survey'] != 4:
+                continue
+            
+            for prop in [
+                'lsst_diaSource_pixelFlags',
+                'lsst_diaSource_psfFlux_flag',
+                'lsst_diaSource_isNegative',
+                'lsst_diaSource_centroid_flag',
+                'lsst_diaSource_shape_flag',
+            ]:
+                if (prop in props) and props[prop]:
+                    continue
+
+            if ('lsst_diaSource_isDipole' in props) and props['lsst_diaSource_isDipole']:
+                continue
+
+            num_real += 1
+            mjds.append(alert.mjd)
+
+        if num_real < 5:
+            return False
+
+        if (np.max(mjds) - np.min(mjds)) < 3:
+            return False
+
+        return True
+                
+
+    def process_query_results(self, loci, filt: RankingFilter):
+        """Filter query results by preprocessing checks.
+        Returns dataframe.
+        """
+        processed_dicts = []
+        if os.path.exists(self._prost_path):
+            full_table = pd.read_csv(self._prost_path)
+        else:
+            full_table = None
+            
+        ts_dict = {}
+        worker_args = []
+
+        print("START")
+        # initial locus filter
+        for i, locus in enumerate(loci):
+            if i % 100 == 0:
+                print(f"Processed {i} loci...")
+
+            if i > 10_000:
+                break
+
+            # if no LSST ID, SKIP
+            if 'lsst' not in locus.properties['survey']:
+                continue
+
+            props = locus.properties
+
+            # super simple variability check
+            if props['oldest_alert_magnitude'] - props['brightest_alert_magnitude'] < 0.5:
+                continue
+
+            if props['newest_alert_observation_time'] - props['oldest_alert_observation_time'] < 3.0:
+                continue
+
+            if not self.star_catalog_check(locus):
+                continue
+
+            if not self.filter_bogus_alerts(locus):
+                #print("BOGUS")
+                continue
+                
+            #try:
+                # 1) Check if locus in full_table
+            if full_table is not None and (locus.locus_id in full_table['name'].to_numpy()):
+                row = full_table.loc[full_table['name'] == locus.locus_id, ['name', 'ra', 'dec', 'nuclear']].iloc[0]
+                locus_dict = row.to_dict()
+            else:
+                # 2) Check star catalog
+                locus_dict = {
+                    'name': locus.locus_id,
+                    'ra': locus.ra,
+                    'dec': locus.dec,
+                }
+            print(locus_dict)
+
+            try:
+                ts = locus.lightcurve[[
+                    'ant_mjd', 'ant_mag', 'ant_magerr', 'ant_passband', 'ant_ra', 'ant_dec'
+                ]].to_pandas()
+
+            except:
+                ts = locus.lightcurve[[
+                    'ant_mjd', 'ant_mag', 'ant_magerr', 'ant_passband', 'ant_ra', 'ant_dec'
+                ]]
+
+            #except:
+            #    continue
+                        
+            ts.dropna(inplace=True, axis=0, ignore_index=True)
+            worker_args.append((locus_dict, ts, locus.properties, locus.catalog_objects, filt._filt.input_properties))
+
+        # 4) Use 'spawn' start method to avoid fork issues with JAX
+        ts_dict = {}
+        processed_dicts = []
+        parallelize = True # works better not on a distributed cluster
+            
+        if parallelize:
+            ctx = mp.get_context("spawn")
+            with ctx.Pool(processes=10) as pool:
+                # Use imap, which yields results one by one in order:
+                for i, out in enumerate(pool.imap_unordered(self._process_single_locus, worker_args), start=1):
+                    if i % 10 == 0 or i == len(worker_args):
+                        print(f"  → main: completed {i}/{len(worker_args)} loci")
+
+                    if out is None:
+                        continue
+
+                    locus_id, new_lc, locus_dict = out
+                    ts_dict[locus_id] = new_lc
+                    processed_dicts.append(locus_dict)
+        
+        else:
+            for i, w in enumerate(worker_args):
+                if i % 10 == 0 or i == len(worker_args):
+                    print(f"  → main: completed {i}/{len(worker_args)} loci")
+                out = self._process_single_locus(w)
+                if out is None:
+                    continue
+
+                locus_id, new_lc, locus_dict = out
+                ts_dict[locus_id] = new_lc
+                processed_dicts.append(locus_dict)
+                
+        if len(processed_dicts) == 0:
+            return None, None
+            
+        locus_df = pd.DataFrame.from_records(processed_dicts)
+        return locus_df, ts_dict
+
+class LSSTOrcusRetriever(LSSTRetriever):
+    def __init__(self, lookback_days=1.0):
+        super().__init__(lookback_days=lookback_days)
+        
+        self._csv_path = os.path.join(
+            Path(__file__).parent.parent.parent.absolute(), "data/orcus/daily_candidates/sources.csv"
+        )
+        df = pd.read_csv(self._csv_path)
+        self._names = df.id.astype(str).unique()
+
+    def retrieve_candidates(self, filt, max_num):
+        """Generate candidate df for the ranker. MUST return a dataframe
+        with set columns.
+        """
+        print("Running ANTARESRanker for filter "+filt.name)
+        filt.setup()
+        self.reset_query()
+        self.check_watch()
+        self.constrain_query_mjd()
+        self.apply_filter(filt)
+
+        loci = []
+        for n in self._names:
+            locus = antares_client.search.get_by_lsst_dia_object_id(n)
+            if locus is not None:
+                ts = locus.timeseries.to_pandas()[['lsst_diaSource_psfFlux', 'lsst_diaSource_psfFluxErr', 'ant_passband', 'ant_mag', 'ant_magerr']]
+                path = os.path.join(
+                    Path(__file__).parent.parent.parent.absolute(), "data/orcus/photometry/" + n + ".csv"
+                )
+                ts.to_csv(path)
+                loci.append(locus)
+            
+        out1, out2 = self.process_query_results(loci, filt)
+        return out1, out2
+
+    
 
 if __name__ == "__main__":
     retriever = YSERetriever(lookback_days=1.)

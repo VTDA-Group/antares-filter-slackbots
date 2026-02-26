@@ -185,10 +185,12 @@ class SuperphotPlusZTF(BaseFilter):
             'ant_passband': 'filter'
         }, inplace=True)
 
-        ts = ts.loc[ts['filter'].isin(['R', 'g', 'ATLAS_o', 'ATLAS_c'])]
+        ts = ts.loc[ts['filter'].isin(['r', 'g', 'R', 'ATLAS_o', 'ATLAS_c'])]
+        ts.loc[ts['filter'] == 'r', 'filter'] = 'R'
+        #ts = ts.loc[ts['filter'].isin(['R', 'g', 'ATLAS_o', 'ATLAS_c'])]
 
-        ts.loc[ts['filter'] == 'ATLAS_o', 'filter'] = 'R' # basically the same
-        ts.loc[ts['filter'] == 'ATLAS_c', 'filter'] = 'g' # basically the same
+        #ts.loc[ts['filter'] == 'ATLAS_o', 'filter'] = 'R' # basically the same
+        #ts.loc[ts['filter'] == 'ATLAS_c', 'filter'] = 'g' # basically the same
 
         ts['filt_center'] = np.where(
             ts['filter'] == 'R',
@@ -211,10 +213,34 @@ class SuperphotPlusZTF(BaseFilter):
         for lc in phot.light_curves:
             lc.merge_close_times(inplace=True)
             new_lcs.append(lc)
-        
+
+        if len(new_lcs) == 0:
+            return None
         phot = Photometry.from_light_curves(new_lcs)
+        phot.upper_limit = False
+
         return phot
+
+    def quality_cut(self, phot):
+        for lc in phot.light_curves:
+            sub_ts = lc.detections
     
+            if len(sub_ts) < 5:
+                continue # don't do variability checks if < 5 points
+    
+            # first variability cut
+            if np.ptp(sub_ts['mag']) < 3 * sub_ts['mag_error'].mean():
+                return False
+    
+            # second variability cut
+            if sub_ts['mag'].std() < sub_ts['mag_error'].mean():
+                return False
+    
+            # third variability cut
+            if np.ptp(sub_ts['mag']) < 0.5: # < 0.5 mag spread
+                return False
+        return True
+        
     
     def evaluate_cal_probs(self, model, orig_features):
         input_features = model.best_model.feature_name_
@@ -250,13 +276,13 @@ class SuperphotPlusZTF(BaseFilter):
             the SN-like transient to be fit
         """
         # skip if nuclear
-        if event_dict['nuclear']:
-            event_dict['superphot_plus_valid'] = 0
-            return event_dict
+        #if event_dict['nuclear']:
+        #    event_dict['superphot_plus_valid'] = 0
+        #    return event_dict
         
         # removes rows with nan values
         ts.dropna(inplace=True, axis=0, ignore_index=True)
-
+        
         if 'ant_ra' not in ts.columns:
             print(ts)
             print(ts.columns)
@@ -268,11 +294,19 @@ class SuperphotPlusZTF(BaseFilter):
         if ts['ant_dec'].std() > 0.5 / 3600.: # arcsec
             event_dict['superphot_plus_valid'] = 0
             return event_dict # marked as variable star or AGN
-        
+
         ts.drop(columns=['ant_ra', 'ant_dec'], inplace=True)
 
         phot = None
         phot = self.generate_antares_phot(ts)
+        if phot is None:
+            event_dict['superphot_plus_valid'] = 0
+            return event_dict # marked as variable star or AGN
+
+        if not self.quality_cut(phot):
+            print("failed quality cut")
+            event_dict['superphot_plus_valid'] = 0
+            return event_dict
             
         phot.phase(inplace=True)
         
@@ -281,19 +315,20 @@ class SuperphotPlusZTF(BaseFilter):
         
         if ~np.isnan(redshift):
             phot.times /= (1. + redshift)
-            
+
         phot.truncate(min_t=-50., max_t=100.)
 
         if len(phot) < 2: # removed a filter
             event_dict['superphot_plus_valid'] = 0
             return event_dict
-        
+
         event_dict['superphot_plus_valid'] = 1
         
         phot.correct_extinction(
             coordinates=SkyCoord(ra = event_dict['ra'] * u.deg, dec = event_dict['dec'] * u.deg),
             inplace=True
         )
+
         # let's recalculate peak_app_mag of extincted LC
         phot_abs = phot.absolute(redshift=redshift)
         peak_abs_mag = phot_abs.detections.mag.dropna().min()
@@ -342,11 +377,11 @@ class SuperphotPlusZTF(BaseFilter):
 
         # remove fits with reduced chisq above score cutoff
         if orig_size >= 8:
-            valid_fits = results.fit_parameters[results.score <= self.score_cutoff]
+            valid_fits = results.fit_parameters[:100][results.score <= self.score_cutoff]
             if len(valid_fits) == 0:
                 return event_dict
         else:
-            valid_fits = results.fit_parameters
+            valid_fits = results.fit_parameters[:100]
 
         # check which fits place all observations before piecewise transition
         early_fit_mask = valid_fits['gamma_ZTF_r'] + valid_fits['t_0_ZTF_r'] > np.max(phot.times)
@@ -356,7 +391,6 @@ class SuperphotPlusZTF(BaseFilter):
 
         # fix index for groupby() operations within model.evaluate()
         uncorr_fits.index = [event_dict['name']] * len(uncorr_fits)
-        
         
         if ~np.isnan(redshift):
             # add magnitude to uncorr_fits
@@ -381,7 +415,6 @@ class SuperphotPlusZTF(BaseFilter):
             # use full-phase classifier
             class_noz, prob_noz, Ia_prob_noz = self.evaluate_cal_probs(self.full_model, uncorr_fits)
             event_dict['superphot_plus_classifier'] = 'full_lightgbm_02_2025'
-            
             
         # set predicted SN class and output probability of that classification
         if ~np.isnan(redshift):

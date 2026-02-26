@@ -59,6 +59,12 @@ def yse_quality_check(ts):
     if np.ptp(times.quantile([0.1, 0.9])) >= 100.:
         return False
 
+    if ts['ant_ra'].std() > 0.5 / 3600.: # arcsec
+        return False
+
+    if ts['ant_dec'].std() > 0.5 / 3600.: # arcsec
+        return False
+
     # require 2 good bands
     good_band1 = False
     good_band2 = False

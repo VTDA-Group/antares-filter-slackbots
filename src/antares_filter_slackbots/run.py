@@ -7,7 +7,7 @@ from antares_filter_slackbots.filters import SuperphotPlusZTF, ShapleyPlotLAISS,
 from antares_filter_slackbots.slack_formatters import SlackPoster
 from antares_filter_slackbots.retrievers import (
     ANTARESRetriever, YSERetriever, RelaxedANTARESRetriever,
-    TNSRetriever, ATLASRetriever
+    TNSRetriever, ATLASRetriever, LSSTRetriever, LSSTOrcusRetriever
 )
 
 def all_current_filters():
@@ -19,6 +19,9 @@ def all_current_filters():
     tns_retriever = TNSRetriever(2.0)
     atlas_retriever = ATLASRetriever(2.0)
     relaxed_ant_retriever = RelaxedANTARESRetriever(1.0)
+    lsst_retriever = LSSTRetriever(1.0)
+    orcus_retriever = LSSTOrcusRetriever(1.0)
+
     
     current_time = Time.now().mjd
     nuclear = RankingFilter(
@@ -140,15 +143,57 @@ def all_current_filters():
         },
         groupby_properties={'superphot_plus_class': ('SN IIn', 'SN Ibc', 'SLSN-I',)}
     )
+    sp_lsst = RankingFilter(
+        "superphot-plus-lsst",
+        lsst_retriever,
+        SuperphotPlusZTF(),
+        "#lsst-superphot-plus",
+        "superphot_plus_prob",
+        pre_filter_properties = {
+            "oldest_alert_observation_time": (current_time-200., 99_999_999,),
+            "num_mag_values": (5, 2000),
+        },
+        save_properties = [
+            "superphot_plus_class_without_redshift", "superphot_plus_prob_without_redshift",    
+            "superphot_plus_classifier", "superphot_plus_sampler", "superphot_non_Ia_prob",
+        ],
+        post_filter_tags = ["superphot_plus_classified",],
+        post_filter_properties = {
+            "superphot_plus_valid": (1,1),
+        },
+        groupby_properties={'superphot_plus_class': ('SN Ia', 'SN II', 'SN IIn', 'SN Ibc', 'SLSN-I',)}
+    )
+    sp_orcus = RankingFilter(
+        "orcus",
+        orcus_retriever,
+        SuperphotPlusZTF(),
+        "#orcus-superphot-plus",
+        "superphot_plus_prob",
+        pre_filter_properties = {
+            "oldest_alert_observation_time": (current_time-200., 99_999_999,),
+            "num_mag_values": (5, 2000),
+        },
+        save_properties = [
+            "superphot_plus_class_without_redshift", "superphot_plus_prob_without_redshift",    
+            "superphot_plus_classifier", "superphot_plus_sampler", "superphot_non_Ia_prob",
+        ],
+        post_filter_tags = ["superphot_plus_classified",],
+        post_filter_properties = {
+            "superphot_plus_valid": (1,1),
+        },
+        groupby_properties={'superphot_plus_class': ('SN Ia', 'SN II', 'SN IIn', 'SN Ibc', 'SLSN-I',)}
+    )
     all_filters = [
-        laiss,
-        tns_query,
-        sp_bright,
-        sp,
-        atlas_query,
-        yse_query,
-        precursor,
-        nuclear,
+        sp_orcus,
+        #sp_lsst,
+        #laiss,
+        #tns_query,
+        #sp_bright,
+        #sp,
+        #atlas_query,
+        #yse_query,
+        #precursor,
+        #nuclear,
     ]
     return all_filters
 
@@ -160,7 +205,7 @@ def run():
     for filt in all_current_filters():
         for _ in range(3): # three attempts
             #try:
-            ranker.run(filt, 10) # max_num
+            ranker.run(filt, 1000) # max_num
             break
             #except:
             #    pass
