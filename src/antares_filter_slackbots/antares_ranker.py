@@ -680,7 +680,6 @@ class ANTARESRanker:
             slack_loci = SlackPoster(None, {}, filt.save_prefix)
             slack_loci.post_empty(filt.channel)
             return
-
             
         if final_df is None:
             slack_loci = SlackPoster(None, {}, filt.save_prefix)

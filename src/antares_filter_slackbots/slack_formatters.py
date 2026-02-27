@@ -501,8 +501,46 @@ class SlackVoteHandler:
         # Define the route to handle incoming Slack events
         self.flask_app.route("/slack/events", methods=["POST"])(self.slack_events)
         self._auth = HTTPBasicAuth(login_ysepz, password_ysepz)
+        self._tag_path_dict = {
+            "superphot-plus-lsst": "https://ziggy.ucolick.org/yse/api/transienttags/126/",
+            "orcus": "https://ziggy.ucolick.org/yse/api/transienttags/126/",
+            "superphot-plus": "https://ziggy.ucolick.org/yse/api/transienttags/127/",
+            "superphot-plus-bright": "https://ziggy.ucolick.org/yse/api/transienttags/127/",
+        }
 
-
+    def extract_values_from_attachment(attachment):
+        ra = None
+        dec = None
+        tns_name = None
+    
+        for block in attachment:
+            # 1. Extract RA / Dec from fields
+            if block.get("type") == "section" and "fields" in block:
+                for field in block["fields"]:
+                    text = field.get("text", "")
+    
+                    if text.startswith("*RA*:"):
+                        ra = re.search(r"\*RA\*:\s*([^\s]+)", text)
+                        ra = ra.group(1) if ra else None
+    
+                    elif text.startswith("*Declination*:"):
+                        dec = re.search(r"\*Declination\*:\s*([^\s]+)", text)
+                        dec = dec.group(1) if dec else None
+    
+            # 2. Extract TNS name from title section
+            if block.get("type") == "section" and "text" in block:
+                title_text = block["text"].get("text", "")
+                # Example: :collision: <url|*TNSNAME*> | <url|*ROWNAME*> :collision:
+                match = re.search(r"\|\*(.*?)\*\>", title_text)
+                if match:
+                    tns_name = match.group(1)
+    
+        return {
+            "ra": ra,
+            "dec": dec,
+            "tns_name": tns_name
+        }
+        
     def load_votes_df(self, filter_name):
         """Load dataframe with votes.
         """
@@ -527,6 +565,16 @@ class SlackVoteHandler:
 
         return vote_df, votes_fn
 
+
+    def yse_tag_after_vote(self, vote, vote_df, filter_name, blocks):
+        new_upvote_mask = (vote_df.index == obj_id) & (vote_df.Response.isin(['upvote', 'strong_upvote']))
+        if (vote in ['upvote', 'strong_upvote']) and (len(vote_df.loc[new_upvote_mask]) == 0):
+            tag_path = self._tag_path_dict.get(filter_name, None)
+            if tag_path is not None:
+                event_dict = extract_values_from_attachment(blocks)
+                add_tag_to_yse(event_dict, tag_path, self._auth)
+            
+        
     def handle_object_vote(self, ack, body, client):
         ack()
         user_id = body['user']['id']
@@ -536,11 +584,12 @@ class SlackVoteHandler:
         antid = action['action_id'].split("$")[-1]
         filter_name = action['action_id'].split("$")[-2]
         timestamp = body['message']['ts']
+        blocks = body["message"]["blocks"]
 
         vote_df, _ = self.load_votes_df(filter_name)
+        self.yse_tag_after_vote(action_value, vote_df, filter_name, blocks)
 
         if vote_df is not None:
-
             mask = (vote_df.index == antid) & (vote_df.UserID == user_id)
 
             if (vote_df is not None) and (len(vote_df.loc[mask]) > 0):
@@ -592,17 +641,6 @@ class SlackVoteHandler:
             )
             vote_df.index.name = 'Transient'
 
-        # add YSE tag
-        new_upvote_mask = (vote_df.index == obj_id) & (vote_df.Response.isin(['upvote', 'strong_upvote']))
-        if (vote in ['upvote', 'strong_upvote']) and (len(vote_df.loc[new_upvote_mask]) == 0):
-            tag_path = "https://ziggy.ucolick.org/yse/api/transienttags/128/" # SuperPhot+ Test
-            
-            event_dict = {
-                "tns_name": obj_id,
-            }
-            
-            add_tag_to_yse(event_dict, tag_path, self._auth)
-
         # rest of code
         mask = (vote_df.index == obj_id) & (vote_df.UserID == user_id) & (vote_df.Response == vote)
 
@@ -618,8 +656,6 @@ class SlackVoteHandler:
             vote_df = pd.concat([vote_df, new_df])
 
         vote_df.to_csv(vote_fn)
-
-
 
         
     def slack_events(self):
