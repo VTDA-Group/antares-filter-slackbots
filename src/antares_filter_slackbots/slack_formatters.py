@@ -3,6 +3,7 @@ import pandas as pd
 import os
 import re
 import requests
+from requests.auth import HTTPBasicAuth
 
 from astropy.table import Table
 from flask import Flask, request
@@ -13,6 +14,11 @@ from antares_filter_slackbots.slack_requests import (
     setup_app,
     setup_client
 )
+from antares_filter_slackbots.auth import (
+    login_ysepz, password_ysepz
+)
+from antares_filter_slackbots.yse_utils import add_tag_to_yse
+
 
 def geturl(ra, dec, size=240, output_size=None, filters="grizy", format="jpg", color=False, type='stack'):
     """Get the URL for images in the table. Taken from astro_ghost.
@@ -494,6 +500,7 @@ class SlackVoteHandler:
 
         # Define the route to handle incoming Slack events
         self.flask_app.route("/slack/events", methods=["POST"])(self.slack_events)
+        self._auth = HTTPBasicAuth(login_ysepz, password_ysepz)
 
 
     def load_votes_df(self, filter_name):
@@ -574,6 +581,8 @@ class SlackVoteHandler:
     def record_vote(self, vote, obj_id, user_id, user_name, filter_name, timestamp):
         """Adds vote to dataframe with previous
         votes to avoid repeats.
+
+        And a tag to YSE-PZ
         """
         vote_df, vote_fn = self.load_votes_df(filter_name)
         if vote_df is None:
@@ -583,6 +592,18 @@ class SlackVoteHandler:
             )
             vote_df.index.name = 'Transient'
 
+        # add YSE tag
+        new_upvote_mask = (vote_df.index == obj_id) & (vote_df.Response.isin(['upvote', 'strong_upvote']))
+        if (vote in ['upvote', 'strong_upvote']) and (len(vote_df.loc[new_upvote_mask]) == 0):
+            tag_path = "https://ziggy.ucolick.org/yse/api/transienttags/128/" # SuperPhot+ Test
+            
+            event_dict = {
+                "tns_name": obj_id,
+            }
+            
+            add_tag_to_yse(event_dict, tag_path, self._auth)
+
+        # rest of code
         mask = (vote_df.index == obj_id) & (vote_df.UserID == user_id) & (vote_df.Response == vote)
 
         if len(vote_df.loc[mask]) > 0:
@@ -597,6 +618,8 @@ class SlackVoteHandler:
             vote_df = pd.concat([vote_df, new_df])
 
         vote_df.to_csv(vote_fn)
+
+
 
         
     def slack_events(self):
