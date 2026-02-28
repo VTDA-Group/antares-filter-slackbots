@@ -505,7 +505,7 @@ class SlackVoteHandler:
             "superphot-plus-lsst": "https://ziggy.ucolick.org/yse/api/transienttags/126/",
             "orcus": "https://ziggy.ucolick.org/yse/api/transienttags/126/",
             "superphot-plus": "https://ziggy.ucolick.org/yse/api/transienttags/127/",
-            "superphot-plus-bright": "https://ziggy.ucolick.org/yse/api/transienttags/127/",
+            "superphot-plus_bright": "https://ziggy.ucolick.org/yse/api/transienttags/127/",
         }
 
     def extract_values_from_attachment(attachment):

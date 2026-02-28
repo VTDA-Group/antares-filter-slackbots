@@ -32,6 +32,28 @@ from antares_filter_slackbots.quality_filters import (
 from antares_filter_slackbots.auth import login_ysepz, password_ysepz, tns_id, tns_name, tns_key
 
 
+def allwise_cut(aw_dict):
+    """Cut out likely ALLWISE stars."""
+    if aw_dict['cc_flags'] != '0000':
+        return False
+    if aw_dict['ext_flg'] > 0:
+        return True
+    if aw_dict['xscprox'] > 0:
+        return True
+    color = aw_dict['w1mpro'] - aw_dict['w2mpro']
+    if (color > -0.1) & (color < 0.3):
+        return False # main sequence
+    if (abs(aw_dict['pmra']) > 50) or (abs(aw_dict['pmdec']) > 50): #mas/yr
+        return False # high proper motion
+    if aw_dict['n_2mass'] > 0:
+        if abs(aw_dict['j_m_2mass'] - aw_dict['k_m_2mass']) < 1:
+            return False
+    if aw_dict['var_flg'] > 5:
+        return False
+    return True
+    
+    
+
 class Retriever:
     def __init__(self, lookback_days):
         self._lookback = lookback_days
@@ -1115,8 +1137,27 @@ class LSSTRetriever(ANTARESRetriever):
             ra = locus.catalog_objects['sdss_gals'][0]['ra']
             coord_match = cd.SkyCoord(ra=ra * u.deg, dec=decl * u.deg)
             sep = coord.separation(coord_match)
-            if sep.to(u.arcsec).value < 0.2:
+            if sep.to(u.arcsec).value < 0.1:
                 return False
+
+        if 'allwise' in locus.catalog_objects:
+            info = locus.catalog_objects['allwise'][0]
+            if not allwise_cut(info):
+                return False
+
+        if 'sdss_stars' in locus.catalog_objects:
+            info = locus.catalog_objects['sdss_stars'][0]
+            if info['type'] == 6: # star
+                return False
+            if info['type'] == 7: # star trail
+                return False
+            decl = locus.catalog_objects['sdss_stars'][0]['dec_']
+            ra = locus.catalog_objects['sdss_stars'][0]['ra']
+            coord_match = cd.SkyCoord(ra=ra * u.deg, dec=decl * u.deg)
+            sep = coord.separation(coord_match)
+            if sep.to(u.arcsec).value < 0.1:
+                return False
+            
 
         return True
 
@@ -1207,7 +1248,7 @@ class LSSTRetriever(ANTARESRetriever):
             if i % 100 == 0:
                 print(f"Processed {i} loci...")
 
-            if i > 10_000:
+            if i > 50_000:
                 break
 
             # if no LSST ID, SKIP

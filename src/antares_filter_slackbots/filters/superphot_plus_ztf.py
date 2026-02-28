@@ -276,9 +276,9 @@ class SuperphotPlusZTF(BaseFilter):
             the SN-like transient to be fit
         """
         # skip if nuclear
-        #if event_dict['nuclear']:
-        #    event_dict['superphot_plus_valid'] = 0
-        #    return event_dict
+        if event_dict['nuclear']:
+            event_dict['superphot_plus_valid'] = 0
+            return event_dict
         
         # removes rows with nan values
         ts.dropna(inplace=True, axis=0, ignore_index=True)
