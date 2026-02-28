@@ -17,7 +17,7 @@ from antares_filter_slackbots.slack_requests import (
 from antares_filter_slackbots.auth import (
     login_ysepz, password_ysepz
 )
-from antares_filter_slackbots.yse_utils import add_tag_to_yse
+from antares_filter_slackbots.yse_utils import search_yse_for_transient, add_tag_to_yse
 
 
 def geturl(ra, dec, size=240, output_size=None, filters="grizy", format="jpg", color=False, type='stack'):
@@ -508,38 +508,14 @@ class SlackVoteHandler:
             "superphot-plus_bright": "https://ziggy.ucolick.org/yse/api/transienttags/127/",
         }
 
-    def extract_values_from_attachment(attachment):
-        ra = None
-        dec = None
-        tns_name = None
-    
+    def extract_yse_name(self, attachment):
         for block in attachment:
-            # 1. Extract RA / Dec from fields
-            if block.get("type") == "section" and "fields" in block:
-                for field in block["fields"]:
-                    text = field.get("text", "")
-    
-                    if text.startswith("*RA*:"):
-                        ra = re.search(r"\*RA\*:\s*([^\s]+)", text)
-                        ra = ra.group(1) if ra else None
-    
-                    elif text.startswith("*Declination*:"):
-                        dec = re.search(r"\*Declination\*:\s*([^\s]+)", text)
-                        dec = dec.group(1) if dec else None
-    
-            # 2. Extract TNS name from title section
-            if block.get("type") == "section" and "text" in block:
-                title_text = block["text"].get("text", "")
-                # Example: :collision: <url|*TNSNAME*> | <url|*ROWNAME*> :collision:
-                match = re.search(r"\|\*(.*?)\*\>", title_text)
+            if block.get("type") == "section":
+                text = block.get("text", {}).get("text", "")
+                match = re.search(r'https://ziggy\.ucolick\.org/yse/transient_detail/([^|]+)\|', text)
                 if match:
-                    tns_name = match.group(1)
-    
-        return {
-            "ra": ra,
-            "dec": dec,
-            "tns_name": tns_name
-        }
+                    return match.group(1)
+        return None
         
     def load_votes_df(self, filter_name):
         """Load dataframe with votes.
@@ -566,12 +542,20 @@ class SlackVoteHandler:
         return vote_df, votes_fn
 
 
-    def yse_tag_after_vote(self, vote, vote_df, filter_name, blocks):
-        new_upvote_mask = (vote_df.index == obj_id) & (vote_df.Response.isin(['upvote', 'strong_upvote']))
-        if (vote in ['upvote', 'strong_upvote']) and (len(vote_df.loc[new_upvote_mask]) == 0):
-            tag_path = self._tag_path_dict.get(filter_name, None)
+    def yse_tag_after_vote(self, vote, vote_df, filter_name, antid, blocks):
+        name = self.extract_yse_name(blocks)
+        event_dict = {
+            'tns_name': name,
+        }
+        tag_path = self._tag_path_dict.get(filter_name, None)
+        yse_result = search_yse_for_transient(event_dict, self._auth)
+        if (vote in ['upvote', 'strong_upvote']) and (tag_path not in yse_result['tags']):
+            print(filter_name, tag_path)
             if tag_path is not None:
-                event_dict = extract_values_from_attachment(blocks)
+                name = self.extract_yse_name(blocks)
+                event_dict = {
+                    'tns_name': name,
+                }
                 add_tag_to_yse(event_dict, tag_path, self._auth)
             
         
@@ -587,7 +571,8 @@ class SlackVoteHandler:
         blocks = body["message"]["blocks"]
 
         vote_df, _ = self.load_votes_df(filter_name)
-        self.yse_tag_after_vote(action_value, vote_df, filter_name, blocks)
+        print(antid)
+        self.yse_tag_after_vote(action_value, vote_df, filter_name, antid, blocks)
 
         if vote_df is not None:
             mask = (vote_df.index == antid) & (vote_df.UserID == user_id)

@@ -36,11 +36,13 @@ def add_tag_to_yse(event_dict, tag_path, auth):
     yse_result['tags'].append(tag_path)
     yse_result['tags'] = list(set(yse_result['tags']))
     url = yse_result['url']
-    requests.put(
+    res = requests.put(
         url,
         json=yse_result,
         auth=auth
     )
+    print("Status Code:", res.status_code)
+
     return yse_result
     
 
